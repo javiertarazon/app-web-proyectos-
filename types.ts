@@ -13,6 +13,7 @@ export interface APUItem {
   unidad: string;
   cantidad: number;
   costoUnitario: number;
+  desperdicio?: number; // Porcentaje de desperdicio (Solo materiales)
   total: number;
 }
 
@@ -20,9 +21,16 @@ export interface APU {
   materiales: APUItem[];
   equipos: APUItem[];
   manoDeObra: APUItem[];
-  rendimiento: string;
-  administracionPorcentaje: number; // Porcentaje de Gastos Administrativos
-  utilidadPorcentaje: number;       // Porcentaje de Utilidad (Ganancia)
+  rendimiento: number; 
+  rendimientoUnidad: string; // ej. "m3/dia"
+  
+  // Parametros Laborales Específicos (Estilo Lulo/Venezuela)
+  laborCASPorcentaje: number; // Costos Asociados al Salario (Prestaciones Sociales)
+  laborCestaTicket: number; // Bono de Alimentación (Valor monetario por jornada)
+
+  // Parametros Indirectos
+  administracionPorcentaje: number; 
+  utilidadPorcentaje: number;       
 }
 
 export interface Partida {
@@ -32,15 +40,27 @@ export interface Partida {
   metrado: number;
   precioUnitario: number;
   precioTotal: number;
+  factorAjuste: number; // Factor de ajuste/contingencia porcentual
   apu: APU;
 }
 
+export interface CompanyInfo {
+  nombreIngeniero: string;
+  civ?: string; // Colegio de Ingenieros
+  razonSocial?: string;
+  direccion?: string;
+}
+
 export interface MemoriaDescriptiva {
-  objetivo: string;
-  alcance: string;
-  ubicacion: string;
-  metodologiaEjecucion: string;
-  especificacionesTecnicas: string[];
+  introduccion: string;
+  informacionEmpresa: CompanyInfo;
+  descripcionPredio: string; // Ubicación, topografía, colindancias
+  marcoLegal: string[]; // Leyes y normas
+  descripcionProyecto: string; // Descripción espacial y técnica detallada
+  descripcionEstructural?: string; // O descripción del sistema (eléctrico/sanitario)
+  serviciosRequeridos: string; // Agua, luz, saneamiento
+  etapasConstructivas: string[]; // Cronograma lógico
+  conclusiones: string;
 }
 
 export interface PresupuestoConfig {
@@ -68,7 +88,28 @@ export interface FileAttachment {
 
 export enum AppStatus {
   IDLE = 'IDLE',
-  ANALYZING = 'ANALYZING',
+  CLARIFYING = 'CLARIFYING', // AI is asking questions
+  ANALYZING = 'ANALYZING',   // AI is generating final report
   SUCCESS = 'SUCCESS',
   ERROR = 'ERROR'
+}
+
+export interface ClarificationQuestion {
+  id: string;
+  text: string;
+  options: string[]; // Opciones de selección simple
+}
+
+export interface ClarificationResponse {
+  message: string; // Mensaje conversacional
+  questions: ClarificationQuestion[]; // Lista de preguntas
+  isReady: boolean; // Si es true, el botón de generar informe se activa
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+  timestamp: Date;
+  clarificationData?: ClarificationResponse; // Datos estructurados opcionales
 }
