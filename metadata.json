@@ -1,0 +1,5 @@
+{
+  "name": "IngenI/O - Calculadora de Ingeniería",
+  "description": "Un asistente de ingeniería impulsado por IA que analiza descripciones de proyectos para generar cálculos estructurales, estimaciones de materiales y especificaciones técnicas automáticamente.",
+  "requestFramePermissions": []
+}
