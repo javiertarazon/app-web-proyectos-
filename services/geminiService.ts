@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { ProjectResponse, FileAttachment, ChatMessage, ClarificationResponse } from "../types";
-import { getStandardsContext } from "../data/coveninStandards";
+import { STANDARDS_DB, SUPPORTED_COUNTRIES } from "../data/standardsData";
+import { loadSettings } from "../services/settingsService";
 
 const MODEL_NAME = "gemini-3-pro-preview";
 
@@ -10,6 +11,35 @@ const getAI = () => {
     throw new Error("La variable de entorno API_KEY no está configurada.");
   }
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
+};
+
+// Helper to build context string from settings
+const getContextFromSettings = (): string => {
+  const settings = loadSettings();
+  const countryName = SUPPORTED_COUNTRIES.find(c => c.code === settings.country)?.name || settings.country;
+  
+  let context = `PAÍS/REGIÓN DEL PROYECTO: ${countryName}\n\n`;
+  context += "NORMATIVAS DE REFERENCIA (PRIORIDAD ALTA):\n";
+  
+  // Load standard library for current country
+  const countryStandards = STANDARDS_DB[settings.country];
+  if (countryStandards) {
+    Object.entries(countryStandards).forEach(([discipline, list]) => {
+      context += `\nDISCIPLINA: ${discipline}\n`;
+      list.filter(s => s.active).forEach(s => {
+        context += `- ${s.code}: ${s.title}\n`;
+      });
+    });
+  }
+
+  // Add custom user files if they are small text, otherwise they are attachments
+  // We list them here so AI knows they exist
+  if (settings.customStandards.length > 0) {
+    context += "\nDOCUMENTOS ADICIONALES DEL USUARIO (Ver adjuntos):\n";
+    settings.customStandards.forEach(f => context += `- ${f.name}\n`);
+  }
+
+  return context;
 };
 
 // --- SHARED SCHEMAS ---
@@ -118,52 +148,56 @@ const projectSchema: Schema = {
   required: ["projectTitle", "discipline", "memoriaDescriptiva", "memoriaCalculo", "presupuesto", "presupuestoConfig", "normativaAplicable", "conclusiones"]
 };
 
-// 1. PHASE ONE: GENERATE CLARIFYING QUESTIONS (STRUCTURED)
+// 1. PHASE ONE: GENERATE CLARIFYING QUESTIONS
 export const generateClarifyingQuestions = async (chatHistory: ChatMessage[], attachments: FileAttachment[] = []): Promise<ClarificationResponse> => {
   const ai = getAI();
-  const standardsContext = getStandardsContext();
+  const standardsContext = getContextFromSettings();
+  const settings = loadSettings();
 
   // Convert ChatHistory to a single narrative context
   const conversationContext = chatHistory.map(msg => `${msg.role === 'user' ? 'CLIENTE' : 'INGENIERO'}: ${msg.text}`).join('\n\n');
 
   const systemInstruction = `
-    Eres un Ingeniero Senior Auditor. Tu objetivo es obtener toda la información técnica necesaria para generar un proyecto ejecutivo (Memoria, Cálculos, Presupuesto).
+    Eres un Ingeniero Senior Auditor. Tu objetivo es obtener toda la información técnica necesaria para generar un proyecto ejecutivo.
+    
+    ESTÁS OPERANDO BAJO NORMATIVAS DE: ${settings.country}.
     
     Analiza la conversación.
-    1. Si falta información crítica (resistencias, voltajes, áreas, tipos de material), genera preguntas de SELECCIÓN SIMPLE (Multiple Choice) para agilizar la respuesta del usuario.
+    1. Si falta información crítica, genera preguntas de SELECCIÓN SIMPLE.
     2. Si ya tienes suficiente información para un anteproyecto sólido, marca 'isReady' como true.
     
-    Tus preguntas deben ser técnicas, basadas en normas COVENIN, pero fáciles de responder (opciones claras).
-    Máximo 3 preguntas por turno.
+    Tus preguntas deben ser técnicas, basadas en las normas listadas en el contexto, pero fáciles de responder.
   `;
 
   const clarificationSchema: Schema = {
     type: Type.OBJECT,
     properties: {
-      message: { type: Type.STRING, description: "Breve mensaje introductorio o de confirmación." },
+      message: { type: Type.STRING, description: "Breve mensaje introductorio." },
       questions: {
         type: Type.ARRAY,
         items: {
           type: Type.OBJECT,
           properties: {
             id: { type: Type.STRING },
-            text: { type: Type.STRING, description: "La pregunta técnica" },
-            options: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Opciones de respuesta sugeridas" }
+            text: { type: Type.STRING },
+            options: { type: Type.ARRAY, items: { type: Type.STRING } }
           },
           required: ["id", "text", "options"]
         }
       },
-      isReady: { type: Type.BOOLEAN, description: "True si ya se tiene suficiente información para generar el informe final." }
+      isReady: { type: Type.BOOLEAN }
     },
     required: ["message", "questions", "isReady"]
   };
 
   const parts: any[] = [
-     { text: `CONTEXTO NORMATIVO: ${standardsContext}` },
+     { text: `CONTEXTO NORMATIVO ACTIVO:\n${standardsContext}` },
      { text: `HISTORIAL DE CONVERSACIÓN: ${conversationContext}` }
   ];
 
   attachments.forEach(att => parts.push({ inlineData: { mimeType: att.mimeType, data: att.data } }));
+  // Also add custom standards from settings if they are images/pdfs (re-attaching them here ensures AI sees them)
+  settings.customStandards.forEach(att => parts.push({ inlineData: { mimeType: att.mimeType, data: att.data } }));
 
   try {
     const response = await ai.models.generateContent({
@@ -187,33 +221,35 @@ export const generateClarifyingQuestions = async (chatHistory: ChatMessage[], at
 // 2. PHASE TWO: GENERATE FULL ENGINEERING DATA
 export const generateEngineeringData = async (chatHistory: ChatMessage[], attachments: FileAttachment[] = []): Promise<ProjectResponse> => {
   const ai = getAI();
-  const standardsContext = getStandardsContext();
+  const standardsContext = getContextFromSettings();
+  const settings = loadSettings();
 
-  // Convert ChatHistory to a single narrative context
   const conversationContext = chatHistory.map(msg => `${msg.role === 'user' ? 'CLIENTE' : 'INGENIERO'}: ${msg.text}`).join('\n\n');
 
   const systemInstruction = `
-    Eres un Ingeniero Civil/Eléctrico Senior experto en redacción de proyectos ejecutivos y licitaciones.
+    Eres un Ingeniero Senior experto en proyectos ejecutivos.
     
-    TU TAREA: Generar un Expediente Técnico completo basado en la conversación sostenida con el cliente.
+    TU TAREA: Generar un Expediente Técnico completo.
+    PAÍS: ${settings.country} (Usa la moneda y terminología local si aplica, ej. Bs para VE, $ para US/INTL, € para ES).
     
-    ESTRUCTURA OBLIGATORIA DE LA MEMORIA DESCRIPTIVA (Basada en Guía de Protección Civil):
-    1. INTRODUCCIÓN, 2. EMPRESA/INGENIERO, 3. PREDIO, 4. MARCO LEGAL (COVENIN), 5. DESCRIPCIÓN TÉCNICA, 6. SERVICIOS, 7. ETAPAS.
+    ESTRUCTURA OBLIGATORIA:
+    1. INTRODUCCIÓN, 2. EMPRESA/INGENIERO, 3. PREDIO, 4. MARCO LEGAL (Usa las normas provistas en el contexto), 5. DESCRIPCIÓN TÉCNICA, 6. SERVICIOS, 7. ETAPAS.
     
-    DIRECTRICES PARA APU Y PRESUPUESTO:
-    - Generar partidas con códigos COVENIN reales o simulados.
+    DIRECTRICES:
+    - Generar partidas con códigos reales o simulados según la norma local.
     - Desglose estricto de Materiales, Equipos y Mano de Obra.
-    - Mano de Obra: Incluir porcentajes realistas de Prestaciones (CAS ~200% para Venezuela) y Bono Alimentación.
+    - Mano de Obra: Ajustar porcentajes de prestaciones sociales según el país seleccionado.
     
-    INPUT: Historial de conversación donde se definieron los detalles del proyecto.
+    INPUT: Historial de conversación.
   `;
 
   const parts: any[] = [
-    { text: `CONTEXTO NORMATIVO: ${standardsContext}` },
-    { text: `HISTORIAL DE ENTREVISTA CON CLIENTE: ${conversationContext}` }
+    { text: `CONTEXTO NORMATIVO:\n${standardsContext}` },
+    { text: `HISTORIAL DE ENTREVISTA: ${conversationContext}` }
   ];
 
   attachments.forEach(att => parts.push({ inlineData: { mimeType: att.mimeType, data: att.data } }));
+  settings.customStandards.forEach(att => parts.push({ inlineData: { mimeType: att.mimeType, data: att.data } }));
 
   try {
     const response = await ai.models.generateContent({
@@ -231,25 +267,20 @@ export const generateEngineeringData = async (chatHistory: ChatMessage[], attach
     return JSON.parse(response.text) as ProjectResponse;
   } catch (e) {
     console.error("API Error in Generation:", e);
-    throw new Error("El análisis de ingeniería falló. Por favor intente nuevamente o reduzca el tamaño de los adjuntos.");
+    throw new Error("El análisis de ingeniería falló.");
   }
 };
 
-// 3. PHASE THREE: MODIFY EXISTING DATA
+// 3. PHASE THREE: MODIFY EXISTING DATA (No changes needed, logic is generic)
 export const modifyEngineeringData = async (currentData: ProjectResponse, userRequest: string): Promise<ProjectResponse> => {
   const ai = getAI();
+  const settings = loadSettings();
   
   const systemInstruction = `
     Eres un asistente de ingeniería que modifica estructuras de datos JSON.
-    Recibirás un objeto JSON con los datos de un proyecto (ProjectResponse) y una solicitud de cambio del usuario.
+    PAÍS CONTEXTO: ${settings.country}.
     
-    Tu tarea es aplicar INTELIGENTEMENTE los cambios solicitados al JSON.
-    
-    Reglas:
-    1. Si el usuario pide cambiar un valor numérico (ej: "Sube el IVA al 16%"), actualiza el campo correspondiente.
-    2. Si pide agregar una partida, genera una nueva partida COVENIN completa con APU coherente y agrégala al array 'presupuesto'.
-    3. Si pide cambiar un parámetro de cálculo (ej: "El concreto es de 250kg/cm2"), actualiza la memoria descriptiva y busca si hay items en memoriaCalculo que deban cambiar.
-    4. MANTÉN la estructura exacta del JSON.
+    Tu tarea es aplicar los cambios solicitados al JSON manteniendo la integridad técnica.
     
     Devuelve ÚNICAMENTE el JSON actualizado.
   `;
@@ -275,6 +306,6 @@ export const modifyEngineeringData = async (currentData: ProjectResponse, userRe
     return JSON.parse(response.text) as ProjectResponse;
   } catch (e) {
     console.error("API Error in Modification:", e);
-    throw new Error("La modificación falló debido a un error de conexión con el modelo.");
+    throw new Error("La modificación falló.");
   }
 }

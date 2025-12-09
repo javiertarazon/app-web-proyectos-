@@ -70,6 +70,8 @@ export interface PresupuestoConfig {
 }
 
 export interface ProjectResponse {
+  id?: string; // Unique ID for storage
+  lastModified?: string; // ISO Date string
   projectTitle: string;
   discipline: string;
   memoriaDescriptiva: MemoriaDescriptiva;
@@ -87,9 +89,11 @@ export interface FileAttachment {
 }
 
 export enum AppStatus {
-  IDLE = 'IDLE',
-  CLARIFYING = 'CLARIFYING', // AI is asking questions
-  ANALYZING = 'ANALYZING',   // AI is generating final report
+  DASHBOARD = 'DASHBOARD',
+  SETTINGS = 'SETTINGS', // New Settings Menu
+  INPUT = 'INPUT',
+  CLARIFYING = 'CLARIFYING',
+  ANALYZING = 'ANALYZING',
   SUCCESS = 'SUCCESS',
   ERROR = 'ERROR'
 }
@@ -97,13 +101,13 @@ export enum AppStatus {
 export interface ClarificationQuestion {
   id: string;
   text: string;
-  options: string[]; // Opciones de selección simple
+  options: string[];
 }
 
 export interface ClarificationResponse {
-  message: string; // Mensaje conversacional
-  questions: ClarificationQuestion[]; // Lista de preguntas
-  isReady: boolean; // Si es true, el botón de generar informe se activa
+  message: string;
+  questions: ClarificationQuestion[];
+  isReady: boolean;
 }
 
 export interface ChatMessage {
@@ -111,5 +115,23 @@ export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
   timestamp: Date;
-  clarificationData?: ClarificationResponse; // Datos estructurados opcionales
+  clarificationData?: ClarificationResponse;
+}
+
+// --- SETTINGS TYPES ---
+
+export type CountryCode = 'VE' | 'US' | 'ES' | 'MX' | 'INTL';
+export type Discipline = 'CIVIL' | 'ELECTRICA' | 'MECANICA' | 'SISTEMAS' | 'TELECOM';
+
+export interface Standard {
+  code: string;
+  title: string;
+  url?: string; // Optional external link
+  active: boolean; // If selected for the project context
+}
+
+export interface AppSettings {
+  country: CountryCode;
+  customStandards: FileAttachment[]; // Uploaded PDFs/TXTs for persistent context
+  activeDisciplines: Discipline[];
 }

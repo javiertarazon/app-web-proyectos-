@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import InputSection from './components/InputSection';
 import ClarificationChat from './components/ClarificationChat';
 import ResultsDashboard from './components/ResultsDashboard';
+import ProjectList from './components/ProjectList';
+import SettingsPanel from './components/SettingsPanel';
 import { generateClarifyingQuestions, generateEngineeringData, modifyEngineeringData } from './services/geminiService';
 import { AppStatus, ProjectResponse, FileAttachment, ChatMessage } from './types';
-import { Layers, Github } from 'lucide-react';
+import { Layers, Github, Settings as SettingsIcon } from 'lucide-react';
 
 const App: React.FC = () => {
-  const [status, setStatus] = useState<AppStatus>(AppStatus.IDLE);
+  const [status, setStatus] = useState<AppStatus>(AppStatus.DASHBOARD);
   const [data, setData] = useState<ProjectResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -16,14 +18,37 @@ const App: React.FC = () => {
   const [isModifying, setIsModifying] = useState(false);
   const [isReadyToGenerate, setIsReadyToGenerate] = useState(false);
 
-  // 1. Initial Input -> Start Clarification
+  // --- Handlers ---
+
+  const handleNewProject = () => {
+    setStatus(AppStatus.INPUT);
+    setData(null);
+    setChatMessages([]);
+    setAttachments([]);
+    setIsReadyToGenerate(false);
+  };
+
+  const handleOpenProject = (project: ProjectResponse) => {
+    setData(project);
+    setStatus(AppStatus.SUCCESS);
+  };
+
+  const handleReturnToDashboard = () => {
+    setStatus(AppStatus.DASHBOARD);
+  };
+
+  const handleOpenSettings = () => {
+    setStatus(AppStatus.SETTINGS);
+  };
+
+  // --- Core Logic ---
+
   const handleInitialInput = async (description: string, files: FileAttachment[]) => {
     setStatus(AppStatus.CLARIFYING);
     setAttachments(files);
     setIsProcessing(true);
     setIsReadyToGenerate(false);
     
-    // Add User's initial prompt to chat history
     const initialMsg: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
@@ -31,7 +56,6 @@ const App: React.FC = () => {
       timestamp: new Date()
     };
     
-    // Create temp history for the API call
     const currentHistory = [initialMsg];
     setChatMessages(currentHistory);
 
@@ -41,7 +65,7 @@ const App: React.FC = () => {
       const aiMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'model',
-        text: response.message, // Fallback text for history view
+        text: response.message,
         timestamp: new Date(),
         clarificationData: response
       };
@@ -58,7 +82,6 @@ const App: React.FC = () => {
     }
   };
 
-  // 2. Chat during Clarification Phase (Cycle)
   const handleClarificationMessage = async (text: string) => {
     setIsProcessing(true);
     
@@ -69,12 +92,10 @@ const App: React.FC = () => {
       timestamp: new Date()
     };
     
-    // Optimistic update
     const updatedHistory = [...chatMessages, userMsg];
     setChatMessages(updatedHistory);
 
     try {
-       // Call AI with updated history to check answer or get next questions
        const response = await generateClarifyingQuestions(updatedHistory, attachments);
        
        const aiMsg: ChatMessage = {
@@ -90,13 +111,11 @@ const App: React.FC = () => {
 
     } catch (err: any) {
       console.error(err);
-      // Don't crash app, just let user try again or generate
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // 3. Generate Final Report
   const handleGenerateReport = async () => {
     setStatus(AppStatus.ANALYZING);
     try {
@@ -110,12 +129,13 @@ const App: React.FC = () => {
     }
   };
 
-  // 4. Modify Report via Chat
   const handleModifyReport = async (request: string) => {
       if(!data) return;
       setIsModifying(true);
       try {
           const updatedData = await modifyEngineeringData(data, request);
+          updatedData.id = data.id;
+          updatedData.lastModified = new Date().toISOString();
           setData(updatedData);
       } catch (err: any) {
           alert("Error aplicando cambios: " + err.message);
@@ -130,7 +150,7 @@ const App: React.FC = () => {
       {/* Navbar */}
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStatus(AppStatus.IDLE)}>
+          <div className="flex items-center gap-3 cursor-pointer" onClick={handleReturnToDashboard}>
             <div className="bg-gradient-to-tr from-eng-600 to-indigo-600 p-2 rounded-lg">
               <Layers className="w-6 h-6 text-white" />
             </div>
@@ -139,20 +159,47 @@ const App: React.FC = () => {
               <p className="text-[10px] text-slate-400 font-mono uppercase tracking-widest">Asistente Técnico AI</p>
             </div>
           </div>
-          <div className="hidden md:flex items-center gap-4 text-sm text-slate-400">
-             <span>v2.0 - Interactivo</span>
-             <a href="#" className="hover:text-white transition-colors"><Github className="w-5 h-5" /></a>
+          <div className="flex items-center gap-4 text-sm text-slate-400">
+             <button 
+               onClick={handleOpenSettings}
+               className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-white"
+               title="Configuración"
+             >
+               <SettingsIcon className="w-5 h-5" />
+             </button>
+             <div className="hidden md:flex items-center gap-2">
+                <span>v2.2</span>
+                <a href="#" className="hover:text-white transition-colors"><Github className="w-5 h-5" /></a>
+             </div>
           </div>
         </div>
       </header>
 
       {/* Main Content */}
       <main className="flex-grow p-4 md:p-8">
+
+        {/* VIEW: DASHBOARD (HOME) */}
+        {status === AppStatus.DASHBOARD && (
+          <ProjectList onOpenProject={handleOpenProject} onNewProject={handleNewProject} />
+        )}
+
+        {/* VIEW: SETTINGS */}
+        {status === AppStatus.SETTINGS && (
+           <SettingsPanel onClose={handleReturnToDashboard} />
+        )}
         
-        {/* VIEW: INITIAL INPUT */}
-        {status === AppStatus.IDLE && (
+        {/* VIEW: INITIAL INPUT FORM */}
+        {status === AppStatus.INPUT && (
           <>
-            <div className="flex flex-col items-center justify-center min-h-[40vh] text-center space-y-6 animate-fade-in-up mt-10">
+            <div className="flex justify-start max-w-4xl mx-auto mb-4">
+               <button 
+                 onClick={handleReturnToDashboard}
+                 className="text-slate-400 hover:text-white text-sm flex items-center gap-2 hover:bg-slate-800 px-3 py-1.5 rounded-lg transition-all"
+               >
+                 ← Volver al Dashboard
+               </button>
+            </div>
+            <div className="flex flex-col items-center justify-center min-h-[40vh] text-center space-y-6 animate-fade-in-up mt-4">
                 <h2 className="text-4xl md:text-5xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-eng-400 via-indigo-400 to-purple-400">
                 Cálculo de Ingeniería<br/>Potenciado por IA
                 </h2>
@@ -198,10 +245,10 @@ const App: React.FC = () => {
             <h3 className="text-xl font-semibold text-red-200 mb-2">Error en el proceso</h3>
             <p className="text-red-300/80 mb-4">{error}</p>
             <button 
-              onClick={() => setStatus(AppStatus.IDLE)}
+              onClick={() => setStatus(AppStatus.DASHBOARD)}
               className="px-4 py-2 bg-red-900 hover:bg-red-800 text-red-100 rounded-lg transition-colors text-sm font-medium"
             >
-              Reiniciar
+              Volver al Inicio
             </button>
           </div>
         )}
@@ -211,10 +258,10 @@ const App: React.FC = () => {
           <>
             <div className="flex justify-end max-w-7xl mx-auto mb-6">
                <button 
-                 onClick={() => setStatus(AppStatus.IDLE)}
+                 onClick={handleReturnToDashboard}
                  className="text-slate-400 hover:text-white text-sm flex items-center gap-2 hover:bg-slate-800 px-3 py-1.5 rounded-lg transition-all"
                >
-                 ← Nuevo Proyecto
+                 ← Cerrar Proyecto
                </button>
             </div>
             <ResultsDashboard data={data} onModify={handleModifyReport} isModifying={isModifying} />

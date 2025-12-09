@@ -1,25 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ProjectResponse, Partida, APUItem, PresupuestoConfig, APU } from '../types';
 import CalculationCard from './CalculationCard';
+import { saveProject } from '../services/storageService';
 import { 
   FileText, 
   Calculator, 
   DollarSign, 
-  BookOpen, 
-  HardHat, 
-  Truck, 
-  Hammer, 
-  ChevronDown, 
-  ChevronUp,
-  ClipboardList,
-  Edit,
-  Save,
-  FileSpreadsheet,
-  FileType,
-  RefreshCw,
-  Calendar,
-  Percent,
-  Sliders,
   Layers,
   Search,
   MapPin,
@@ -30,7 +16,15 @@ import {
   MessageSquareMore,
   X,
   Send,
-  Loader2
+  Loader2,
+  Edit,
+  Save,
+  FileType,
+  FileSpreadsheet,
+  ChevronUp,
+  ChevronDown,
+  ArrowUpDown,
+  Filter
 } from 'lucide-react';
 import {
   PieChart,
@@ -60,22 +54,28 @@ const downloadFile = (content: string, filename: string, type: string) => {
   URL.revokeObjectURL(url);
 };
 
+type SortKey = 'codigo' | 'descripcion' | 'metrado' | 'precioUnitario' | 'precioTotal';
+type SortDirection = 'asc' | 'desc';
+
 const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, onModify, isModifying }) => {
   const [data, setData] = useState<ProjectResponse>(initialData);
   const [activeTab, setActiveTab] = useState<'memoria' | 'calculos' | 'presupuesto' | 'apu'>('memoria');
-  // En la tab APU, usamos expandedRow para saber cual APU está abierto
   const [expandedApuIndex, setExpandedApuIndex] = useState<number | null>(0);
   const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [apuSearchTerm, setApuSearchTerm] = useState('');
   
+  // Budget Table Filter & Sort
+  const [budgetSearchTerm, setBudgetSearchTerm] = useState('');
+  const [sortConfig, setSortConfig] = useState<{key: SortKey, direction: SortDirection}>({ key: 'codigo', direction: 'asc' });
+
   // Chat Modification State
   const [showChat, setShowChat] = useState(false);
   const [chatInput, setChatInput] = useState('');
-  const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Sync state if initialData changes (new search or modification)
+  // Sync state if initialData changes
   useEffect(() => {
-    // Normalización de datos para compatibilidad con versiones anteriores de la API
+    // Data normalization logic (retained from previous)
     const normalizedData = {
         ...initialData,
         presupuesto: initialData.presupuesto.map(p => ({
@@ -94,6 +94,18 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
     setData(normalizedData);
   }, [initialData]);
 
+  const handleSaveProject = () => {
+    setIsSaving(true);
+    try {
+        const saved = saveProject(data);
+        setData(saved); // Update state with ID
+        setTimeout(() => setIsSaving(false), 1000);
+    } catch (e) {
+        alert("Error guardando proyecto.");
+        setIsSaving(false);
+    }
+  };
+
   const handleModificationSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (chatInput.trim() && !isModifying) {
@@ -102,47 +114,25 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
     }
   };
 
-  // --- LÓGICA DE CÁLCULO APU (Estilo Lulo Software) ---
-
+  // --- LÓGICA DE CÁLCULO APU --- (Same as before)
   const recalculatePartida = (partida: Partida): Partida => {
-    
-    // 1. MATERIALES: Cantidad * Costo * (1 + %Desperdicio)
     const calculateMaterialTotal = (item: APUItem) => {
         const wasteFactor = 1 + ((item.desperdicio || 0) / 100);
         return item.cantidad * item.costoUnitario * wasteFactor;
     };
     const totalMateriales = partida.apu.materiales.reduce((acc, item) => acc + calculateMaterialTotal(item), 0);
-
-    // 2. EQUIPOS: Cantidad * Costo
     const calculateSimpleTotal = (item: APUItem) => item.cantidad * item.costoUnitario;
     const totalEquipos = partida.apu.equipos.reduce((acc, item) => acc + calculateSimpleTotal(item), 0);
-
-    // 3. MANO DE OBRA (Cálculo Venezolano)
-    // Base Labor cost (Jornales Básicos)
     const totalLaborBase = partida.apu.manoDeObra.reduce((acc, item) => acc + calculateSimpleTotal(item), 0);
-    // Prestaciones Sociales (CAS) sobre el salario base
     const montoCAS = totalLaborBase * (partida.apu.laborCASPorcentaje / 100);
-    // Bono Alimentación (Cesta Ticket)
-    // Se asume que la sumatoria de "cantidad" en mano de obra equivale al número de hombres/día requeridos por unidad de obra.
     const totalHombresDia = partida.apu.manoDeObra.reduce((acc, item) => acc + item.cantidad, 0);
     const montoBono = totalHombresDia * partida.apu.laborCestaTicket;
-    
     const totalManoDeObra = totalLaborBase + montoCAS + montoBono;
-    
-    // 4. COSTO DIRECTO (A)
     const costoDirecto = totalMateriales + totalEquipos + totalManoDeObra;
-
-    // 5. INDIRECTOS
-    // Administración (sobre CD)
     const adminMonto = costoDirecto * (partida.apu.administracionPorcentaje / 100);
     const subtotalB = costoDirecto + adminMonto;
-    
-    // Utilidad (sobre Subtotal B)
     const utilidadMonto = subtotalB * (partida.apu.utilidadPorcentaje / 100);
     const precioUnitarioPrevio = subtotalB + utilidadMonto;
-
-    // 6. FACTOR DE AJUSTE (Contingencia o Ajuste Final)
-    // Aplicado sobre el precio unitario previo al IVA
     const ajusteMonto = precioUnitarioPrevio * ((partida.factorAjuste || 0) / 100);
     const nuevoPrecioUnitario = precioUnitarioPrevio + ajusteMonto;
 
@@ -159,19 +149,15 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
     };
   };
 
-  // --- Handlers ---
-
   const handleBudgetChange = (index: number, field: keyof Partida, value: string | number) => {
     const newData = { ...data };
     let partida = { ...newData.presupuesto[index] };
-    
     if (field === 'metrado') {
       partida.metrado = Number(value);
       partida.precioTotal = partida.metrado * partida.precioUnitario;
     } else {
       (partida as any)[field] = value;
     }
-    
     newData.presupuesto[index] = partida;
     setData(newData);
   };
@@ -193,22 +179,14 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
       setData(newData);
   };
 
-  const handleAPUItemChange = (
-    partidaIndex: number, 
-    category: 'materiales' | 'equipos' | 'manoDeObra', 
-    itemIndex: number, 
-    field: keyof APUItem, 
-    value: string | number
-  ) => {
+  const handleAPUItemChange = (partidaIndex: number, category: 'materiales' | 'equipos' | 'manoDeObra', itemIndex: number, field: keyof APUItem, value: string | number) => {
     const newData = { ...data };
     const partida = { ...newData.presupuesto[partidaIndex] };
     const items = [...partida.apu[category]];
     const item = { ...items[itemIndex] };
-
     (item as any)[field] = field === 'descripcion' || field === 'unidad' ? value : Number(value);
     items[itemIndex] = item;
     partida.apu = { ...partida.apu, [category]: items };
-    
     newData.presupuesto[partidaIndex] = recalculatePartida(partida);
     setData(newData);
   };
@@ -223,18 +201,54 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
     }));
   };
 
-  // --- Export Markdown ---
+  // --- Sorting & Filtering Logic for Budget Table ---
+  const handleSort = (key: SortKey) => {
+      setSortConfig(prev => ({
+          key,
+          direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
+      }));
+  };
+
+  const getSortedAndFilteredBudget = () => {
+      // 1. Filter
+      let filtered = data.presupuesto.map((p, idx) => ({ ...p, originalIndex: idx })); // Keep track of original index for handlers
+      
+      if (budgetSearchTerm) {
+          const lowerTerm = budgetSearchTerm.toLowerCase();
+          filtered = filtered.filter(p => 
+              p.codigo.toLowerCase().includes(lowerTerm) || 
+              p.descripcion.toLowerCase().includes(lowerTerm)
+          );
+      }
+
+      // 2. Sort
+      filtered.sort((a, b) => {
+          let aValue = a[sortConfig.key];
+          let bValue = b[sortConfig.key];
+
+          if (typeof aValue === 'string') aValue = aValue.toLowerCase();
+          if (typeof bValue === 'string') bValue = bValue.toLowerCase();
+
+          if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
+          if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
+          return 0;
+      });
+
+      return filtered;
+  };
+
+  const sortedBudget = getSortedAndFilteredBudget();
+
+  // --- Export ---
   const downloadMemoriaMarkdown = () => {
     let md = `# ${data.projectTitle}\n\n`;
     md += `**Disciplina:** ${data.discipline}\n\n`;
     md += `## 1. Memoria Descriptiva\n\n`;
     md += `### Introducción\n${data.memoriaDescriptiva.introduccion}\n\n`;
     md += `### Descripción del Proyecto\n${data.memoriaDescriptiva.descripcionProyecto}\n\n`;
-    
     downloadFile(md, `Memoria_${data.projectTitle.substring(0, 10)}.md`, 'text/markdown');
   };
 
-  // --- Export CSV ---
   const downloadBudgetCSV = () => {
     let csv = "Codigo,Descripcion,Unidad,Metrado,P. Unitario,Total\n";
     data.presupuesto.forEach(p => {
@@ -243,8 +257,6 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
     downloadFile(csv, 'presupuesto.csv', 'text/csv');
   };
 
-
-  // --- Calculations for Chart ---
   const totalPresupuesto = data.presupuesto.reduce((acc, item) => acc + item.precioTotal, 0);
   const montoIVA = totalPresupuesto * (data.presupuestoConfig.porcentajeIVA / 100);
   const totalGeneral = totalPresupuesto + montoIVA;
@@ -255,7 +267,6 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
     { name: 'Mano de Obra', value: data.presupuesto.reduce((acc, p) => acc + (p.apu.manoDeObra.reduce((s, m) => s + m.total, 0) * p.metrado), 0) },
     { name: 'Equipos', value: data.presupuesto.reduce((acc, p) => acc + (p.apu.equipos.reduce((s, m) => s + m.total, 0) * p.metrado), 0) },
   ];
-  
   const COLORS = ['#0ea5e9', '#f59e0b', '#10b981'];
 
   const filteredAPUs = data.presupuesto.map((p, index) => ({ partida: p, index })).filter(item => 
@@ -289,7 +300,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                  </div>
                  
                  <div className="flex-grow p-4 overflow-y-auto bg-slate-950/80 text-sm text-slate-300">
-                     <p className="mb-4">Describe los cambios que deseas realizar. La IA actualizará el proyecto completo (Memoria, Cálculos y Presupuesto).</p>
+                     <p className="mb-4">Describe los cambios que deseas realizar. La IA actualizará el proyecto completo.</p>
                      
                      <div className="bg-slate-800 p-3 rounded-lg mb-2 border border-slate-700">
                         <span className="font-bold text-xs text-eng-400 block mb-1">Ejemplos:</span>
@@ -297,7 +308,6 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                             <li>"Cambia el rendimiento del concreto a 20 m3/día"</li>
                             <li>"Agrega una partida de pintura epóxica"</li>
                             <li>"Actualiza el IVA al 16%"</li>
-                            <li>"Elimina la partida de excavación manual"</li>
                         </ul>
                      </div>
 
@@ -345,8 +355,22 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
               <span className="text-eng-500 font-mono text-xs uppercase tracking-widest border border-eng-900 bg-eng-950 px-2 py-0.5 rounded">
                 {data.discipline}
               </span>
+              {data.lastModified && (
+                  <span className="text-[10px] text-slate-500">
+                      Guardado: {new Date(data.lastModified).toLocaleString()}
+                  </span>
+              )}
             </div>
-            <h1 className="text-2xl md:text-3xl font-bold text-white">{data.projectTitle}</h1>
+            <h1 className="text-2xl md:text-3xl font-bold text-white flex items-center gap-2">
+                {data.projectTitle}
+                <button 
+                    onClick={handleSaveProject} 
+                    className="p-1 hover:bg-slate-800 rounded-full transition-colors" 
+                    title="Guardar Proyecto"
+                >
+                    {isSaving ? <Loader2 className="w-5 h-5 text-eng-400 animate-spin" /> : <Save className="w-5 h-5 text-slate-400 hover:text-eng-400" />}
+                </button>
+            </h1>
           </div>
           
           <div className="flex items-center gap-2 bg-slate-800 p-1 rounded-lg border border-slate-700 shadow-lg">
@@ -386,7 +410,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
       </div>
 
       <div className="min-h-[500px]">
-        {/* --- TAB MEMORIA (Rediseñada) --- */}
+        {/* --- TAB MEMORIA --- */}
         {activeTab === 'memoria' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -502,22 +526,45 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
               
               {/* TABLA PRINCIPAL */}
               <div className="lg:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-6 shadow-lg overflow-hidden flex flex-col">
-                <div className="flex justify-between items-center mb-4">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4">
                    <h2 className="text-lg font-bold text-white flex items-center gap-2"><DollarSign className="w-5 h-5 text-eng-500" /> Presupuesto General</h2>
+                   
+                   {/* Table Filter */}
+                   <div className="relative w-full sm:w-auto">
+                     <Search className="absolute left-3 top-2.5 text-slate-500 w-4 h-4" />
+                     <input 
+                        type="text" 
+                        placeholder="Filtrar por Partida o Código..." 
+                        value={budgetSearchTerm}
+                        onChange={(e) => setBudgetSearchTerm(e.target.value)}
+                        className="w-full sm:w-64 bg-slate-900 border border-slate-700 rounded-lg py-2 pl-9 pr-3 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-eng-500"
+                     />
+                   </div>
                 </div>
+
                 <div className="overflow-x-auto flex-grow">
                   <table className="w-full text-sm text-left text-slate-300">
-                    <thead className="text-xs text-slate-400 uppercase bg-slate-900/50">
+                    <thead className="text-xs text-slate-400 uppercase bg-slate-900/50 cursor-pointer select-none">
                       <tr>
-                        <th className="px-4 py-3">Código</th>
-                        <th className="px-4 py-3">Partida</th>
-                        <th className="px-4 py-3 text-right">Cant.</th>
-                        <th className="px-4 py-3 text-right">P. Unitario</th>
-                        <th className="px-4 py-3 text-right">Total</th>
+                        <th className="px-4 py-3 hover:text-white" onClick={() => handleSort('codigo')}>
+                            <div className="flex items-center gap-1">Código <ArrowUpDown className="w-3 h-3" /></div>
+                        </th>
+                        <th className="px-4 py-3 hover:text-white" onClick={() => handleSort('descripcion')}>
+                            <div className="flex items-center gap-1">Partida <ArrowUpDown className="w-3 h-3" /></div>
+                        </th>
+                        <th className="px-4 py-3 text-right hover:text-white" onClick={() => handleSort('metrado')}>
+                            <div className="flex items-center justify-end gap-1">Cant. <ArrowUpDown className="w-3 h-3" /></div>
+                        </th>
+                        <th className="px-4 py-3 text-right hover:text-white" onClick={() => handleSort('precioUnitario')}>
+                            <div className="flex items-center justify-end gap-1">P. Unitario <ArrowUpDown className="w-3 h-3" /></div>
+                        </th>
+                        <th className="px-4 py-3 text-right hover:text-white" onClick={() => handleSort('precioTotal')}>
+                            <div className="flex items-center justify-end gap-1">Total <ArrowUpDown className="w-3 h-3" /></div>
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-700">
-                      {data.presupuesto.map((partida, idx) => (
+                      {sortedBudget.map((partida) => (
                         <tr key={partida.codigo} className="hover:bg-slate-700/30 transition-colors">
                           <td className="px-4 py-3 font-mono text-xs text-slate-400">{partida.codigo}</td>
                           <td className="px-4 py-3 font-medium text-slate-200">
@@ -533,7 +580,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                               <input 
                                 type="number" 
                                 value={partida.metrado} 
-                                onChange={(e) => handleBudgetChange(idx, 'metrado', e.target.value)} 
+                                onChange={(e) => handleBudgetChange((partida as any).originalIndex, 'metrado', e.target.value)} 
                                 className="w-20 bg-slate-900 border border-slate-600 rounded px-1 text-right text-xs text-white focus:border-eng-500 outline-none" 
                               />
                             ) : partida.metrado.toLocaleString()}
@@ -546,6 +593,11 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                           </td>
                         </tr>
                       ))}
+                      {sortedBudget.length === 0 && (
+                          <tr>
+                              <td colSpan={5} className="text-center py-8 text-slate-500 italic">No se encontraron partidas con ese filtro.</td>
+                          </tr>
+                      )}
                     </tbody>
                     <tfoot className="bg-slate-900 border-t border-slate-700">
                          <tr>
