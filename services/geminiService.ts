@@ -1,9 +1,10 @@
-import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { GoogleGenAI, Type, Schema, GenerateContentResponse } from "@google/genai";
 import { ProjectResponse, FileAttachment, ChatMessage, ClarificationResponse } from "../types";
 import { STANDARDS_DB, SUPPORTED_COUNTRIES } from "../data/standardsData";
 import { loadSettings } from "../services/settingsService";
 
 const MODEL_NAME = "gemini-3-pro-preview";
+const CLARIFICATION_FALLBACK_MODEL = "gemini-2.5-flash";
 
 // Helper to get AI instance
 const getAI = () => {
@@ -12,6 +13,31 @@ const getAI = () => {
   }
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
+
+// Helper to handle API retries
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  retries = 3,
+  delay = 2000
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error: any) {
+    const isQuotaError = error.status === 429 || 
+                         error.status === 503 || 
+                         error.message?.includes('429') || 
+                         error.message?.includes('quota') || 
+                         error.message?.includes('RESOURCE_EXHAUSTED') ||
+                         error.message?.includes('overloaded');
+
+    if (isQuotaError && retries > 0) {
+      console.warn(`Gemini API Quota/Limit hit. Retrying in ${delay}ms... (${retries} attempts left)`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return withRetry(operation, retries - 1, delay * 2);
+    }
+    throw error;
+  }
+}
 
 // Helper to build context string from settings
 const getContextFromSettings = (): string => {
@@ -32,8 +58,7 @@ const getContextFromSettings = (): string => {
     });
   }
 
-  // Add custom user files if they are small text, otherwise they are attachments
-  // We list them here so AI knows they exist
+  // Add custom user files
   if (settings.customStandards.length > 0) {
     context += "\nDOCUMENTOS ADICIONALES DEL USUARIO (Ver adjuntos):\n";
     settings.customStandards.forEach(f => context += `- ${f.name}\n`);
@@ -78,13 +103,19 @@ const projectSchema: Schema = {
         },
         descripcionPredio: { type: Type.STRING },
         marcoLegal: { type: Type.ARRAY, items: { type: Type.STRING } },
-        descripcionProyecto: { type: Type.STRING },
-        descripcionEstructural: { type: Type.STRING },
+        descripcionProyecto: { type: Type.STRING, description: "Descripción técnica detallada de la arquitectura y acabados." },
+        
+        // NEW FIELDS FOR DETAILED CALCULATIONS
+        calculosEstructuralesDetallados: { type: Type.STRING, description: "Desarrollo matemático completo de cargas, predimensionado y volúmenes." },
+        calculosElectricosDetallados: { type: Type.STRING, description: "Estudio de Cargas paso a paso. Iluminación + Tomas + Motores. Cálculo de KVA." },
+        calculosSanitariosDetallados: { type: Type.STRING, description: "Cálculo de Dotación Diaria (Lts/día) según normas. Unidades de Gasto. Capacidad de Tanque." },
+        calculosMecanicosDetallados: { type: Type.STRING, description: "Cálculo de Carga Térmica (BTU). Renovaciones de aire." },
+
         serviciosRequeridos: { type: Type.STRING },
         etapasConstructivas: { type: Type.ARRAY, items: { type: Type.STRING } },
         conclusiones: { type: Type.STRING }
       },
-      required: ["introduccion", "informacionEmpresa", "descripcionPredio", "marcoLegal", "descripcionProyecto", "serviciosRequeridos", "etapasConstructivas"]
+      required: ["introduccion", "informacionEmpresa", "descripcionPredio", "marcoLegal", "descripcionProyecto", "calculosEstructuralesDetallados", "calculosElectricosDetallados", "calculosSanitariosDetallados", "calculosMecanicosDetallados", "serviciosRequeridos", "etapasConstructivas"]
     },
     memoriaCalculo: {
       type: Type.ARRAY,
@@ -148,31 +179,32 @@ const projectSchema: Schema = {
   required: ["projectTitle", "discipline", "memoriaDescriptiva", "memoriaCalculo", "presupuesto", "presupuestoConfig", "normativaAplicable", "conclusiones"]
 };
 
-// 1. PHASE ONE: GENERATE CLARIFYING QUESTIONS
+// 1. CLARIFICATION PHASE
 export const generateClarifyingQuestions = async (chatHistory: ChatMessage[], attachments: FileAttachment[] = []): Promise<ClarificationResponse> => {
   const ai = getAI();
   const standardsContext = getContextFromSettings();
   const settings = loadSettings();
 
-  // Convert ChatHistory to a single narrative context
   const conversationContext = chatHistory.map(msg => `${msg.role === 'user' ? 'CLIENTE' : 'INGENIERO'}: ${msg.text}`).join('\n\n');
 
   const systemInstruction = `
-    Eres un Ingeniero Senior Auditor. Tu objetivo es obtener toda la información técnica necesaria para generar un proyecto ejecutivo.
+    Eres un Auditor Técnico de Ingeniería.
+    TU OBJETIVO: Asegurar que NO existan ambigüedades en el proyecto.
+    PAÍS: ${settings.country}.
     
-    ESTÁS OPERANDO BAJO NORMATIVAS DE: ${settings.country}.
+    Si el usuario dice "Local Gastronómico", DEBES preguntar por:
+    1. Trampa de grasas (Obligatorio en restaurantes).
+    2. Sistema de Detección de Incendios (Obligatorio >100m2).
+    3. Tipo de corriente (Trifásica vs Monofásica para equipos de cocina).
+    4. Acabados sanitarios en cocina (Curva sanitaria, pintura epóxica).
     
-    Analiza la conversación.
-    1. Si falta información crítica, genera preguntas de SELECCIÓN SIMPLE.
-    2. Si ya tienes suficiente información para un anteproyecto sólido, marca 'isReady' como true.
-    
-    Tus preguntas deben ser técnicas, basadas en las normas listadas en el contexto, pero fáciles de responder.
+    No marques 'isReady' hasta tener datos para generar >50 partidas.
   `;
 
   const clarificationSchema: Schema = {
     type: Type.OBJECT,
     properties: {
-      message: { type: Type.STRING, description: "Breve mensaje introductorio." },
+      message: { type: Type.STRING },
       questions: {
         type: Type.ARRAY,
         items: {
@@ -191,17 +223,16 @@ export const generateClarifyingQuestions = async (chatHistory: ChatMessage[], at
   };
 
   const parts: any[] = [
-     { text: `CONTEXTO NORMATIVO ACTIVO:\n${standardsContext}` },
-     { text: `HISTORIAL DE CONVERSACIÓN: ${conversationContext}` }
+     { text: `NORMATIVA:\n${standardsContext}` },
+     { text: `HISTORIAL:\n${conversationContext}` }
   ];
 
   attachments.forEach(att => parts.push({ inlineData: { mimeType: att.mimeType, data: att.data } }));
-  // Also add custom standards from settings if they are images/pdfs (re-attaching them here ensures AI sees them)
   settings.customStandards.forEach(att => parts.push({ inlineData: { mimeType: att.mimeType, data: att.data } }));
 
-  try {
+  const generate = async (model: string) => {
     const response = await ai.models.generateContent({
-      model: MODEL_NAME,
+      model: model,
       contents: { parts },
       config: { 
         systemInstruction,
@@ -209,16 +240,24 @@ export const generateClarifyingQuestions = async (chatHistory: ChatMessage[], at
         responseSchema: clarificationSchema
       }
     });
-
-    if (!response.text) { throw new Error("No se recibieron datos de Gemini."); }
+    if (!response.text) throw new Error("Sin respuesta de Gemini");
     return JSON.parse(response.text) as ClarificationResponse;
+  };
+
+  try {
+    return await withRetry(() => generate(MODEL_NAME));
   } catch (error) {
-    console.error("API Error in Clarification:", error);
-    throw new Error("Error de conexión con el asistente de ingeniería.");
+    console.warn("Primary model quota exceeded, attempting fallback to Flash...");
+    try {
+      return await withRetry(() => generate(CLARIFICATION_FALLBACK_MODEL));
+    } catch (fallbackError) {
+      console.error("Clarification Error:", fallbackError);
+      throw new Error("El servicio de ingeniería está saturado. Por favor espera 30 segundos e intenta de nuevo.");
+    }
   }
 };
 
-// 2. PHASE TWO: GENERATE FULL ENGINEERING DATA
+// 2. GENERATION PHASE
 export const generateEngineeringData = async (chatHistory: ChatMessage[], attachments: FileAttachment[] = []): Promise<ProjectResponse> => {
   const ai = getAI();
   const standardsContext = getContextFromSettings();
@@ -226,86 +265,129 @@ export const generateEngineeringData = async (chatHistory: ChatMessage[], attach
 
   const conversationContext = chatHistory.map(msg => `${msg.role === 'user' ? 'CLIENTE' : 'INGENIERO'}: ${msg.text}`).join('\n\n');
 
+  // SYSTEM PROMPT AGRESIVO PARA CÁLCULOS Y DESGLOSE
   const systemInstruction = `
-    Eres un Ingeniero Senior experto en proyectos ejecutivos.
+    ACTÚA COMO UN INGENIERO CALCULISTA Y PRESUPUESTISTA SENIOR.
     
-    TU TAREA: Generar un Expediente Técnico completo.
-    PAÍS: ${settings.country} (Usa la moneda y terminología local si aplica, ej. Bs para VE, $ para US/INTL, € para ES).
+    EL USUARIO HA RECHAZADO INFORMES ANTERIORES POR SER "RESÚMENES".
+    TU META ES LA **GRANULARIDAD EXTREMA** Y LA **JUSTIFICACIÓN ARITMÉTICA**.
+
+    --- INSTRUCCIONES PARA MEMORIA DE CÁLCULO (Nuevos Campos de Texto) ---
+    En los campos 'calculosEstructuralesDetallados', 'calculosElectricosDetallados', etc., NO escribas solo el resultado.
+    DEBES ESCRIBIR LA SÁBANA DE CÁLCULO:
     
-    ESTRUCTURA OBLIGATORIA:
-    1. INTRODUCCIÓN, 2. EMPRESA/INGENIERO, 3. PREDIO, 4. MARCO LEGAL (Usa las normas provistas en el contexto), 5. DESCRIPCIÓN TÉCNICA, 6. SERVICIOS, 7. ETAPAS.
+    INCORRECTO: "Carga Eléctrica: 90kVA".
+    CORRECTO:
+    "1. Carga de Iluminación:
+       - Área Salón: 80m2 x 30W/m2 = 2400W
+       - Área Cocina: 40m2 x 50W/m2 = 2000W
+    2. Carga de Tomacorrientes:
+       - 15 Tomas Generales x 180W = 2700W
+       - 6 Tomas Especiales Cocina x 1500W = 9000W
+    3. Carga Fuerza Motriz (Aires):
+       - Equipo 5 Ton (18000 BTU) = 6500W
+    4. SUMATORIA TOTAL = ...
+    5. APLICACIÓN DE FACTOR DE DEMANDA (NEC Tablas): 2400W x 100% + ..."
     
-    DIRECTRICES:
-    - Generar partidas con códigos reales o simulados según la norma local.
-    - Desglose estricto de Materiales, Equipos y Mano de Obra.
-    - Mano de Obra: Ajustar porcentajes de prestaciones sociales según el país seleccionado.
+    HAZ ESTO PARA TODAS LAS DISCIPLINAS (AGUA, ELECTRICIDAD, CONCRETO).
+
+    --- INSTRUCCIONES PARA EL PRESUPUESTO (PARTIDAS) ---
+    Genera entre 50 y 100 partidas. DESGLOSA TODO.
     
-    INPUT: Historial de conversación.
+    NO AGRUPES "Punto Eléctrico".
+    Genera:
+    1. E.X.X Suministro de Tubería EMT 1/2".
+    2. E.X.X Instalación de Tubería EMT 1/2".
+    3. E.X.X Suministro de Cajetines Metálicos 4x2".
+    4. E.X.X Suministro de Cable THW #12 AWG.
+    5. E.X.X Suministro de Interruptores Dobles.
+    
+    NO AGRUPES "Baño".
+    Genera:
+    1. E.X.X Puntos de Aguas Blancas 1/2".
+    2. E.X.X Puntos de Aguas Negras 4".
+    3. E.X.X Suministro WC Tanque Bajo.
+    4. E.X.X Instalación de WC.
+    5. E.X.X Construcción de Revestimiento en Paredes (Cerámica).
+
+    --- APU (Análisis de Precios) ---
+    - En Materiales: Incluye siempre "Pegamento", "Electrodos", "Tipe", "Solventes" según corresponda. No pongas solo el material principal.
+    - Mano de Obra: Cuadrillas realistas (Ayudante + Maestro).
+
+    USA EL CONTEXTO DEL CHAT PARA DETERMINAR EL ALCANCE REAL (Ej: Si es 150m2 Restaurante, asume Cocina Industrial, Baños Públicos H/M, Baño Empleados, Barra, Salón).
   `;
 
   const parts: any[] = [
-    { text: `CONTEXTO NORMATIVO:\n${standardsContext}` },
-    { text: `HISTORIAL DE ENTREVISTA: ${conversationContext}` }
+    { text: `NORMATIVA APLEICABLE (${settings.country}):\n${standardsContext}` },
+    { text: `DATOS DEL PROYECTO:\n${conversationContext}` }
   ];
 
   attachments.forEach(att => parts.push({ inlineData: { mimeType: att.mimeType, data: att.data } }));
   settings.customStandards.forEach(att => parts.push({ inlineData: { mimeType: att.mimeType, data: att.data } }));
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await withRetry<GenerateContentResponse>(() => ai.models.generateContent({
       model: MODEL_NAME,
       contents: { parts: parts },
       config: {
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
-        responseSchema: projectSchema
+        responseSchema: projectSchema,
+        // Removed thinkingConfig for gemini-3-pro to avoid quota issues and comply with guidelines
+        maxOutputTokens: 65536
       }
-    });
+    }), 3, 3000); // 3 retries, starting at 3s delay
 
-    if (!response.text) { throw new Error("No se recibieron datos de Gemini."); }
+    if (!response.text) { throw new Error("Sin datos de Gemini"); }
 
     return JSON.parse(response.text) as ProjectResponse;
   } catch (e) {
-    console.error("API Error in Generation:", e);
-    throw new Error("El análisis de ingeniería falló.");
+    console.error("Generation Error:", e);
+    throw new Error("El sistema de ingeniería está sobrecargado (Error 429). Intenta reducir el número de archivos adjuntos o espera unos minutos.");
   }
 };
 
-// 3. PHASE THREE: MODIFY EXISTING DATA (No changes needed, logic is generic)
+// 3. MODIFY PHASE
 export const modifyEngineeringData = async (currentData: ProjectResponse, userRequest: string): Promise<ProjectResponse> => {
   const ai = getAI();
   const settings = loadSettings();
   
   const systemInstruction = `
-    Eres un asistente de ingeniería que modifica estructuras de datos JSON.
-    PAÍS CONTEXTO: ${settings.country}.
+    Eres un Ingeniero Auditor Senior.
+    PAÍS: ${settings.country}.
     
-    Tu tarea es aplicar los cambios solicitados al JSON manteniendo la integridad técnica.
+    MODIFICACIÓN SOLICITADA: "${userRequest}".
     
-    Devuelve ÚNICAMENTE el JSON actualizado.
+    Reglas:
+    1. Si el usuario pide cambiar un material (ej. "Pisos de Mármol"), actualiza:
+       - La Memoria Descriptiva (Acabados).
+       - El Presupuesto (Elimina partida vieja, crea partidas nuevas de suministro, instalación, pulitura).
+       - Los APU (Materiales nuevos, rendimientos diferentes).
+    2. Si pide "Recalcular Tanque", actualiza 'calculosSanitariosDetallados' mostrando la nueva aritmética.
   `;
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await withRetry<GenerateContentResponse>(() => ai.models.generateContent({
       model: MODEL_NAME,
       contents: {
         parts: [
-          { text: `CURRENT DATA JSON: ${JSON.stringify(currentData)}` },
-          { text: `USER MODIFICATION REQUEST: ${userRequest}` }
+          { text: `JSON ACTUAL: ${JSON.stringify(currentData)}` },
+          { text: `SOLICITUD: ${userRequest}` }
         ]
       },
       config: {
         systemInstruction,
         responseMimeType: "application/json",
-        responseSchema: projectSchema
+        responseSchema: projectSchema,
+        // thinkingConfig removed
+        maxOutputTokens: 65536
       }
-    });
+    }));
 
-    if (!response.text) { throw new Error("No se recibieron datos de Gemini."); }
-
+    if (!response.text) { throw new Error("Sin respuesta"); }
     return JSON.parse(response.text) as ProjectResponse;
   } catch (e) {
-    console.error("API Error in Modification:", e);
-    throw new Error("La modificación falló.");
+    console.error("Modification Error:", e);
+    throw new Error("Error al modificar el proyecto debido a saturación de servicios.");
   }
 }

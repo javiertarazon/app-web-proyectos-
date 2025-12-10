@@ -57,8 +57,14 @@ export interface MemoriaDescriptiva {
   descripcionPredio: string; // Ubicación, topografía, colindancias
   marcoLegal: string[]; // Leyes y normas
   descripcionProyecto: string; // Descripción espacial y técnica detallada
-  descripcionEstructural?: string; // O descripción del sistema (eléctrico/sanitario)
-  serviciosRequeridos: string; // Agua, luz, saneamiento
+  
+  // NUEVOS CAMPOS DE CÁLCULO DETALLADO (TEXTO LARGO)
+  calculosEstructuralesDetallados: string; // Desarrollo matemático de cargas y dimensiones
+  calculosElectricosDetallados: string; // Estudio de cargas, tableros y caídas de tensión
+  calculosSanitariosDetallados: string; // Dotación, unidades de gasto, capacidades de tanque
+  calculosMecanicosDetallados: string; // Cargas térmicas, renovación de aire
+
+  serviciosRequeridos: string; // Resumen de servicios
   etapasConstructivas: string[]; // Cronograma lógico
   conclusiones: string;
 }
@@ -75,7 +81,7 @@ export interface ProjectResponse {
   projectTitle: string;
   discipline: string;
   memoriaDescriptiva: MemoriaDescriptiva;
-  memoriaCalculo: CalculationItem[];
+  memoriaCalculo: CalculationItem[]; // Tarjetas de resumen
   presupuesto: Partida[];
   presupuestoConfig: PresupuestoConfig;
   normativaAplicable: string[];

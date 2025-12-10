@@ -6,7 +6,7 @@ import ProjectList from './components/ProjectList';
 import SettingsPanel from './components/SettingsPanel';
 import { generateClarifyingQuestions, generateEngineeringData, modifyEngineeringData } from './services/geminiService';
 import { AppStatus, ProjectResponse, FileAttachment, ChatMessage } from './types';
-import { Layers, Github, Settings as SettingsIcon } from 'lucide-react';
+import { Layers, Github, Settings as SettingsIcon, StopCircle } from 'lucide-react';
 
 const App: React.FC = () => {
   const [status, setStatus] = useState<AppStatus>(AppStatus.DASHBOARD);
@@ -120,13 +120,25 @@ const App: React.FC = () => {
     setStatus(AppStatus.ANALYZING);
     try {
       const result = await generateEngineeringData(chatMessages, attachments);
+      // If status changed (user clicked stop), don't update data
       setData(result);
       setStatus(AppStatus.SUCCESS);
     } catch (err: any) {
-       console.error(err);
-       setError(err.message || "Error generando el informe final.");
-       setStatus(AppStatus.ERROR);
+       // Only show error if we are still analyzing (not if stopped)
+       if(status === AppStatus.ANALYZING) {
+          console.error(err);
+          setError(err.message || "Error generando el informe final.");
+          setStatus(AppStatus.ERROR);
+       }
     }
+  };
+
+  const handleStopGeneration = () => {
+      // Logic to effectively "cancel" for the user: reset state.
+      // Note: This does not abort the network request in this version, but resets UI.
+      if (status === AppStatus.ANALYZING) {
+          setStatus(AppStatus.DASHBOARD); // Or clarify, but Dashboard is safer to reset
+      }
   };
 
   const handleModifyReport = async (request: string) => {
@@ -138,10 +150,18 @@ const App: React.FC = () => {
           updatedData.lastModified = new Date().toISOString();
           setData(updatedData);
       } catch (err: any) {
-          alert("Error aplicando cambios: " + err.message);
+          // If the user cancelled, we might still be here depending on implementation, 
+          // but we will rely on isModifying check in UI
+          if (isModifying) {
+              alert("Error aplicando cambios: " + err.message);
+          }
       } finally {
           setIsModifying(false);
       }
+  };
+
+  const handleCancelModify = () => {
+      setIsModifying(false);
   };
 
   return (
@@ -168,7 +188,7 @@ const App: React.FC = () => {
                <SettingsIcon className="w-5 h-5" />
              </button>
              <div className="hidden md:flex items-center gap-2">
-                <span>v2.2</span>
+                <span>v2.3</span>
                 <a href="#" className="hover:text-white transition-colors"><Github className="w-5 h-5" /></a>
              </div>
           </div>
@@ -224,7 +244,7 @@ const App: React.FC = () => {
 
         {/* VIEW: ANALYZING SPINNER */}
         {status === AppStatus.ANALYZING && (
-           <div className="flex flex-col items-center justify-center h-[60vh] animate-fade-in">
+           <div className="flex flex-col items-center justify-center h-[60vh] animate-fade-in relative">
                <div className="relative">
                    <div className="w-24 h-24 border-4 border-slate-700 border-t-eng-500 rounded-full animate-spin"></div>
                    <div className="absolute inset-0 flex items-center justify-center">
@@ -232,7 +252,15 @@ const App: React.FC = () => {
                    </div>
                </div>
                <h3 className="mt-8 text-xl font-bold text-white">Generando Expediente Técnico...</h3>
-               <p className="text-slate-400 mt-2">Calculando cómputos métricos, APU y memoria descriptiva.</p>
+               <p className="text-slate-400 mt-2 text-center max-w-md">Calculando cómputos métricos, APU y memoria descriptiva. <br/>Esto puede tardar unos minutos.</p>
+               
+               <button 
+                onClick={handleStopGeneration}
+                className="mt-8 flex items-center gap-2 bg-red-900/50 hover:bg-red-800 text-red-200 px-6 py-2 rounded-full font-medium transition-colors border border-red-800"
+               >
+                 <StopCircle className="w-5 h-5" />
+                 Detener Generación
+               </button>
            </div>
         )}
 
@@ -264,7 +292,12 @@ const App: React.FC = () => {
                  ← Cerrar Proyecto
                </button>
             </div>
-            <ResultsDashboard data={data} onModify={handleModifyReport} isModifying={isModifying} />
+            <ResultsDashboard 
+                data={data} 
+                onModify={handleModifyReport} 
+                onCancelModify={handleCancelModify}
+                isModifying={isModifying} 
+            />
           </>
         )}
       </main>

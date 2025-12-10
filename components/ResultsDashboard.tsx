@@ -24,7 +24,14 @@ import {
   ChevronUp,
   ChevronDown,
   ArrowUpDown,
-  Filter
+  Filter,
+  Droplets,
+  Ruler,
+  Thermometer,
+  Check,
+  Download,
+  BookOpen,
+  StopCircle
 } from 'lucide-react';
 import {
   PieChart,
@@ -38,6 +45,7 @@ import {
 interface ResultsDashboardProps {
   data: ProjectResponse;
   onModify: (request: string) => Promise<void>; // Function to call parent modification logic
+  onCancelModify: () => void; // Function to cancel modification
   isModifying: boolean;
 }
 
@@ -57,13 +65,14 @@ const downloadFile = (content: string, filename: string, type: string) => {
 type SortKey = 'codigo' | 'descripcion' | 'metrado' | 'precioUnitario' | 'precioTotal';
 type SortDirection = 'asc' | 'desc';
 
-const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, onModify, isModifying }) => {
+const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, onModify, onCancelModify, isModifying }) => {
   const [data, setData] = useState<ProjectResponse>(initialData);
   const [activeTab, setActiveTab] = useState<'memoria' | 'calculos' | 'presupuesto' | 'apu'>('memoria');
   const [expandedApuIndex, setExpandedApuIndex] = useState<number | null>(0);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [apuSearchTerm, setApuSearchTerm] = useState('');
+  const [showExportMenu, setShowExportMenu] = useState(false);
   
   // Budget Table Filter & Sort
   const [budgetSearchTerm, setBudgetSearchTerm] = useState('');
@@ -72,6 +81,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
   // Chat Modification State
   const [showChat, setShowChat] = useState(false);
   const [chatInput, setChatInput] = useState('');
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Sync state if initialData changes
   useEffect(() => {
@@ -109,6 +119,8 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
   const handleModificationSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (chatInput.trim() && !isModifying) {
+      // Scroll to bottom
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
       await onModify(chatInput);
       setChatInput('');
     }
@@ -239,22 +251,116 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
 
   const sortedBudget = getSortedAndFilteredBudget();
 
-  // --- Export ---
+  // --- EXPORT FUNCTIONS ---
+  
   const downloadMemoriaMarkdown = () => {
     let md = `# ${data.projectTitle}\n\n`;
-    md += `**Disciplina:** ${data.discipline}\n\n`;
-    md += `## 1. Memoria Descriptiva\n\n`;
-    md += `### Introducción\n${data.memoriaDescriptiva.introduccion}\n\n`;
-    md += `### Descripción del Proyecto\n${data.memoriaDescriptiva.descripcionProyecto}\n\n`;
-    downloadFile(md, `Memoria_${data.projectTitle.substring(0, 10)}.md`, 'text/markdown');
+    md += `**Disciplina:** ${data.discipline}\n`;
+    md += `**Fecha:** ${new Date().toLocaleDateString()}\n`;
+    md += `**Responsable:** ${data.memoriaDescriptiva.informacionEmpresa.nombreIngeniero}\n\n`;
+    md += `## 1. MEMORIA DESCRIPTIVA\n\n`;
+    md += `### 1.1 Introducción\n${data.memoriaDescriptiva.introduccion}\n\n`;
+    md += `### 1.2 Descripción del Predio\n${data.memoriaDescriptiva.descripcionPredio}\n\n`;
+    md += `### 1.3 Descripción del Proyecto\n${data.memoriaDescriptiva.descripcionProyecto}\n\n`;
+    md += `### 1.4 Marco Legal\n${data.memoriaDescriptiva.marcoLegal.map(m => `- ${m}`).join('\n')}\n\n`;
+    md += `### 1.5 Conclusiones\n${data.memoriaDescriptiva.conclusiones}\n\n`;
+    downloadFile(md, `Memoria_Descriptiva_${data.projectTitle.replace(/\s+/g, '_')}.md`, 'text/markdown');
+    setShowExportMenu(false);
+  };
+
+  const downloadCalculationMemory = () => {
+    let txt = `MEMORIA DE CÁLCULO DETALLADA\n`;
+    txt += `PROYECTO: ${data.projectTitle}\n`;
+    txt += `=================================================\n\n`;
+    
+    txt += `1. RESUMEN DE VARIABLES CRÍTICAS\n`;
+    data.memoriaCalculo.forEach(item => {
+        txt += `- ${item.name}: ${item.value} ${item.unit} (${item.description})\n`;
+    });
+    
+    txt += `\n2. DESARROLLO MATEMÁTICO POR DISCIPLINA\n`;
+    txt += `-------------------------------------------------\n`;
+    txt += `2.1 CÁLCULOS ESTRUCTURALES Y CÓMPUTOS MÉTRICOS\n`;
+    txt += `${data.memoriaDescriptiva.calculosEstructuralesDetallados || 'No aplica'}\n\n`;
+    
+    txt += `2.2 CÁLCULOS ELÉCTRICOS (ESTUDIO DE CARGAS)\n`;
+    txt += `${data.memoriaDescriptiva.calculosElectricosDetallados || 'No aplica'}\n\n`;
+    
+    txt += `2.3 CÁLCULOS SANITARIOS\n`;
+    txt += `${data.memoriaDescriptiva.calculosSanitariosDetallados || 'No aplica'}\n\n`;
+    
+    txt += `2.4 CÁLCULOS MECÁNICOS\n`;
+    txt += `${data.memoriaDescriptiva.calculosMecanicosDetallados || 'No aplica'}\n\n`;
+    
+    downloadFile(txt, `Memoria_Calculo_${data.projectTitle.replace(/\s+/g, '_')}.txt`, 'text/plain');
+    setShowExportMenu(false);
   };
 
   const downloadBudgetCSV = () => {
-    let csv = "Codigo,Descripcion,Unidad,Metrado,P. Unitario,Total\n";
+    let csv = "Codigo;Descripcion;Unidad;Metrado;Precio Unitario;Precio Total\n";
     data.presupuesto.forEach(p => {
-        csv += `${p.codigo},"${p.descripcion}",${p.unidad},${p.metrado},${p.precioUnitario},${p.precioTotal}\n`;
+        // Escape quotes for CSV
+        const desc = p.descripcion.replace(/"/g, '""');
+        csv += `${p.codigo};"${desc}";${p.unidad};${p.metrado.toFixed(2)};${p.precioUnitario.toFixed(2)};${p.precioTotal.toFixed(2)}\n`;
     });
-    downloadFile(csv, 'presupuesto.csv', 'text/csv');
+    downloadFile(csv, `Presupuesto_${data.projectTitle.replace(/\s+/g, '_')}.csv`, 'text/csv');
+    setShowExportMenu(false);
+  };
+
+  const downloadAllAPUs = () => {
+    let txt = `LIBRO DE ANÁLISIS DE PRECIOS UNITARIOS (APU)\n`;
+    txt += `PROYECTO: ${data.projectTitle}\n`;
+    txt += `FECHA: ${new Date().toLocaleDateString()}\n`;
+    txt += `================================================================================\n\n`;
+
+    data.presupuesto.forEach((p) => {
+        txt += `PARTIDA: ${p.codigo}\n`;
+        txt += `DESCRIPCIÓN: ${p.descripcion}\n`;
+        txt += `UNIDAD: ${p.unidad}   CANTIDAD: ${p.metrado.toFixed(2)}   RENDIMIENTO: ${p.apu.rendimiento} ${p.apu.rendimientoUnidad}\n`;
+        txt += `--------------------------------------------------------------------------------\n`;
+        
+        txt += `MATERIALES\n`;
+        txt += `Descripcion | Unidad | Cantidad | Costo | Total\n`;
+        p.apu.materiales.forEach(m => {
+            txt += `${m.descripcion.padEnd(40)} | ${m.unidad.padEnd(5)} | ${m.cantidad.toFixed(4).padEnd(8)} | ${m.costoUnitario.toFixed(2).padEnd(8)} | ${m.total.toFixed(2)}\n`;
+        });
+        const totalMat = p.apu.materiales.reduce((a,b)=>a+b.total,0);
+        txt += `> Total Materiales: ${totalMat.toFixed(2)}\n\n`;
+
+        txt += `EQUIPOS\n`;
+        p.apu.equipos.forEach(m => {
+            txt += `${m.descripcion.padEnd(40)} | ${'DIA'.padEnd(5)} | ${m.cantidad.toFixed(4).padEnd(8)} | ${m.costoUnitario.toFixed(2).padEnd(8)} | ${m.total.toFixed(2)}\n`;
+        });
+        const totalEq = p.apu.equipos.reduce((a,b)=>a+b.total,0);
+        txt += `> Total Equipos: ${totalEq.toFixed(2)}\n\n`;
+
+        txt += `MANO DE OBRA\n`;
+        p.apu.manoDeObra.forEach(m => {
+            txt += `${m.descripcion.padEnd(40)} | ${'JRN'.padEnd(5)} | ${m.cantidad.toFixed(4).padEnd(8)} | ${m.costoUnitario.toFixed(2).padEnd(8)} | ${m.total.toFixed(2)}\n`;
+        });
+        const totalMO = p.apu.manoDeObra.reduce((a,b)=>a+b.total,0);
+        const cas = totalMO * (p.apu.laborCASPorcentaje/100);
+        const bonos = p.apu.manoDeObra.reduce((a,b)=>a+b.cantidad,0) * p.apu.laborCestaTicket;
+        txt += `  - Subtotal MO: ${totalMO.toFixed(2)}\n`;
+        txt += `  - Prestaciones (${p.apu.laborCASPorcentaje}%): ${cas.toFixed(2)}\n`;
+        txt += `  - Bonos Alimentación: ${bonos.toFixed(2)}\n`;
+        const totalMOTotal = totalMO + cas + bonos;
+        txt += `> Total Mano de Obra: ${totalMOTotal.toFixed(2)}\n\n`;
+
+        const costoDirecto = totalMat + totalEq + totalMOTotal;
+        const admin = costoDirecto * (p.apu.administracionPorcentaje/100);
+        const utilidad = (costoDirecto + admin) * (p.apu.utilidadPorcentaje/100);
+        
+        txt += `RESUMEN PARTIDA\n`;
+        txt += `COSTO DIRECTO:      ${costoDirecto.toFixed(2)}\n`;
+        txt += `ADMINISTRACIÓN:     ${admin.toFixed(2)}\n`;
+        txt += `UTILIDAD:           ${utilidad.toFixed(2)}\n`;
+        txt += `PRECIO UNITARIO:    ${p.precioUnitario.toFixed(2)}\n`;
+        txt += `================================================================================\n\n`;
+    });
+
+    downloadFile(txt, `Libro_APU_${data.projectTitle.replace(/\s+/g, '_')}.txt`, 'text/plain');
+    setShowExportMenu(false);
   };
 
   const totalPresupuesto = data.presupuesto.reduce((acc, item) => acc + item.precioTotal, 0);
@@ -299,24 +405,40 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                      <button onClick={() => setShowChat(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4"/></button>
                  </div>
                  
-                 <div className="flex-grow p-4 overflow-y-auto bg-slate-950/80 text-sm text-slate-300">
+                 <div className="flex-grow p-4 overflow-y-auto bg-slate-950/80 text-sm text-slate-300 flex flex-col">
                      <p className="mb-4">Describe los cambios que deseas realizar. La IA actualizará el proyecto completo.</p>
                      
-                     <div className="bg-slate-800 p-3 rounded-lg mb-2 border border-slate-700">
-                        <span className="font-bold text-xs text-eng-400 block mb-1">Ejemplos:</span>
-                        <ul className="list-disc pl-4 space-y-1 text-xs text-slate-400">
-                            <li>"Cambia el rendimiento del concreto a 20 m3/día"</li>
-                            <li>"Agrega una partida de pintura epóxica"</li>
-                            <li>"Actualiza el IVA al 16%"</li>
-                        </ul>
-                     </div>
-
-                     {isModifying && (
-                        <div className="flex items-center gap-2 text-eng-400 justify-center py-4">
-                            <Loader2 className="w-5 h-5 animate-spin" />
-                            <span>Aplicando cambios...</span>
+                     {/* Suggestion Box */}
+                     {!isModifying && (
+                        <div className="bg-slate-800 p-3 rounded-lg mb-2 border border-slate-700">
+                            <span className="font-bold text-xs text-eng-400 block mb-1">Ejemplos:</span>
+                            <ul className="list-disc pl-4 space-y-1 text-xs text-slate-400">
+                                <li>"Desglosa mejor las partidas eléctricas"</li>
+                                <li>"Agrega cálculo detallado para el tanque de agua"</li>
+                                <li>"Cambia el rendimiento del concreto a 20 m3/día"</li>
+                            </ul>
                         </div>
                      )}
+
+                     {isModifying && (
+                        <div className="flex flex-col items-center justify-center flex-grow py-4 space-y-4">
+                            <div className="flex items-center gap-2 text-eng-400">
+                                <Loader2 className="w-6 h-6 animate-spin" />
+                                <span className="font-bold">Procesando cambios...</span>
+                            </div>
+                            <p className="text-xs text-slate-500 text-center px-4">Recalculando APUs, Metrados y Memorias.</p>
+                            
+                            {/* STOP BUTTON */}
+                            <button 
+                                onClick={onCancelModify}
+                                className="mt-4 bg-red-900/50 hover:bg-red-800 text-red-200 px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition-colors border border-red-800"
+                            >
+                                <StopCircle className="w-4 h-4" />
+                                Detener
+                            </button>
+                        </div>
+                     )}
+                     <div ref={chatEndRef}></div>
                  </div>
 
                  <form onSubmit={handleModificationSubmit} className="p-3 bg-slate-800 border-t border-slate-700">
@@ -325,8 +447,9 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                             value={chatInput}
                             onChange={(e) => setChatInput(e.target.value)}
                             placeholder="Escribe tu solicitud..."
-                            className="w-full bg-slate-900 border border-slate-600 rounded-lg py-2 pl-3 pr-10 text-xs text-white resize-none focus:ring-1 focus:ring-eng-500 outline-none"
+                            className="w-full bg-slate-900 border border-slate-600 rounded-lg py-2 pl-3 pr-10 text-xs text-white resize-none focus:ring-1 focus:ring-eng-500 outline-none disabled:opacity-50"
                             rows={2}
+                            disabled={isModifying}
                             onKeyDown={(e) => {
                                 if(e.key === 'Enter' && !e.shiftKey) {
                                     e.preventDefault();
@@ -382,13 +505,37 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                {isEditing ? 'Terminar Edición' : 'Editar Datos'}
              </button>
              <div className="w-px h-6 bg-slate-700 mx-1"></div>
-             <div className="flex items-center gap-1">
-               <button onClick={downloadMemoriaMarkdown} className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-700 rounded tooltip" title="Descargar Memoria">
-                 <FileType className="w-4 h-4" />
-               </button>
-               <button onClick={downloadBudgetCSV} className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-700 rounded" title="Descargar Presupuesto">
-                 <FileSpreadsheet className="w-4 h-4" />
-               </button>
+             
+             {/* EXPORT MENU */}
+             <div className="relative">
+                <button 
+                  onClick={() => setShowExportMenu(!showExportMenu)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded text-xs font-medium transition-colors ${showExportMenu ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
+                >
+                  <Download className="w-4 h-4" />
+                  Exportar
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+
+                {showExportMenu && (
+                  <div className="absolute right-0 mt-2 w-56 bg-slate-800 border border-slate-600 rounded-lg shadow-2xl z-50 overflow-hidden animate-fade-in-up">
+                      <div className="p-2 border-b border-slate-700 text-[10px] uppercase text-slate-500 font-bold tracking-wider px-3">
+                        Selecciona Formato
+                      </div>
+                      <button onClick={downloadMemoriaMarkdown} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2">
+                          <FileText className="w-4 h-4 text-blue-400" /> Memoria Descriptiva (MD)
+                      </button>
+                      <button onClick={downloadCalculationMemory} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2">
+                          <Calculator className="w-4 h-4 text-orange-400" /> Memoria de Cálculo (TXT)
+                      </button>
+                      <button onClick={downloadBudgetCSV} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2">
+                          <FileSpreadsheet className="w-4 h-4 text-green-400" /> Presupuesto (CSV)
+                      </button>
+                      <button onClick={downloadAllAPUs} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2 border-t border-slate-700 bg-slate-750">
+                          <BookOpen className="w-4 h-4 text-purple-400" /> Libro de APUs (Detallado)
+                      </button>
+                  </div>
+                )}
              </div>
           </div>
         </div>
@@ -398,13 +545,13 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
             <FileText className="w-4 h-4" /> Memoria
           </button>
           <button onClick={() => setActiveTab('calculos')} className={`px-4 py-3 text-sm font-medium flex items-center gap-2 transition-colors border-b-2 whitespace-nowrap ${activeTab === 'calculos' ? 'border-eng-500 text-eng-400 bg-slate-800/50' : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'}`}>
-            <Calculator className="w-4 h-4" /> Cálculos
+            <Calculator className="w-4 h-4" /> Tarjetas
           </button>
           <button onClick={() => setActiveTab('presupuesto')} className={`px-4 py-3 text-sm font-medium flex items-center gap-2 transition-colors border-b-2 whitespace-nowrap ${activeTab === 'presupuesto' ? 'border-eng-500 text-eng-400 bg-slate-800/50' : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'}`}>
             <DollarSign className="w-4 h-4" /> Presupuesto
           </button>
           <button onClick={() => setActiveTab('apu')} className={`px-4 py-3 text-sm font-medium flex items-center gap-2 transition-colors border-b-2 whitespace-nowrap ${activeTab === 'apu' ? 'border-eng-500 text-eng-400 bg-slate-800/50' : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/30'}`}>
-            <Layers className="w-4 h-4" /> Análisis de Precios (APU)
+            <Layers className="w-4 h-4" /> APU
           </button>
         </div>
       </div>
@@ -469,30 +616,64 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                   <div className="bg-slate-800 border border-slate-700 rounded-xl p-8">
                        <div className="flex items-center gap-2 mb-4 text-eng-400">
                           <FileText className="w-6 h-6" />
-                          <h3 className="text-xl font-bold text-white">2. Descripción del Proyecto</h3>
+                          <h3 className="text-xl font-bold text-white">2. Descripción Arquitectónica y Constructiva</h3>
                        </div>
                        <div className="text-slate-300 leading-relaxed whitespace-pre-line text-justify mb-6">
                            {data.memoriaDescriptiva.descripcionProyecto}
                        </div>
-                       
-                       {data.memoriaDescriptiva.descripcionEstructural && (
-                         <div className="bg-slate-900/50 p-4 rounded-lg border border-slate-700/50">
-                             <h4 className="font-semibold text-slate-200 mb-2 text-sm uppercase">Sistema {data.discipline === 'ELECTRICA' ? 'Eléctrico' : 'Estructural'}</h4>
-                             <p className="text-sm text-slate-400">{data.memoriaDescriptiva.descripcionEstructural}</p>
-                         </div>
-                       )}
+                  </div>
+
+                  {/* NUEVAS SECCIONES DE CÁLCULO DETALLADO */}
+                  <div className="space-y-4">
+                      <h3 className="text-lg font-bold text-white pl-2 border-l-4 border-eng-500">3. Memorias de Cálculo (Desarrollo)</h3>
+                      
+                      {/* ESTRUCTURA */}
+                      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+                         <div className="flex items-center gap-2 mb-4 text-orange-400">
+                              <Ruler className="w-5 h-5" />
+                              <h4 className="font-bold text-white">3.1 Cálculo Estructural y Cómputos Métricos</h4>
+                          </div>
+                          <div className="text-sm text-slate-300 font-mono leading-relaxed whitespace-pre-wrap bg-slate-900/50 p-4 rounded-lg border border-slate-800">
+                              {data.memoriaDescriptiva.calculosEstructuralesDetallados || "No disponible."}
+                          </div>
+                      </div>
+
+                      {/* ELÉCTRICA */}
+                      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+                         <div className="flex items-center gap-2 mb-4 text-yellow-400">
+                              <Zap className="w-5 h-5" />
+                              <h4 className="font-bold text-white">3.2 Estudio de Cargas Eléctricas</h4>
+                          </div>
+                          <div className="text-sm text-slate-300 font-mono leading-relaxed whitespace-pre-wrap bg-slate-900/50 p-4 rounded-lg border border-slate-800">
+                              {data.memoriaDescriptiva.calculosElectricosDetallados || "No disponible."}
+                          </div>
+                      </div>
+
+                      {/* SANITARIA */}
+                      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+                         <div className="flex items-center gap-2 mb-4 text-blue-400">
+                              <Droplets className="w-5 h-5" />
+                              <h4 className="font-bold text-white">3.3 Dotación y Capacidad Sanitaria</h4>
+                          </div>
+                          <div className="text-sm text-slate-300 font-mono leading-relaxed whitespace-pre-wrap bg-slate-900/50 p-4 rounded-lg border border-slate-800">
+                              {data.memoriaDescriptiva.calculosSanitariosDetallados || "No disponible."}
+                          </div>
+                      </div>
+
+                       {/* MECÁNICA */}
+                       <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+                         <div className="flex items-center gap-2 mb-4 text-red-400">
+                              <Thermometer className="w-5 h-5" />
+                              <h4 className="font-bold text-white">3.4 Cargas Térmicas (Mecánica)</h4>
+                          </div>
+                          <div className="text-sm text-slate-300 font-mono leading-relaxed whitespace-pre-wrap bg-slate-900/50 p-4 rounded-lg border border-slate-800">
+                              {data.memoriaDescriptiva.calculosMecanicosDetallados || "No disponible."}
+                          </div>
+                      </div>
                   </div>
 
                   {/* Servicios y Etapas */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
-                          <div className="flex items-center gap-2 mb-4 text-eng-400">
-                              <Zap className="w-5 h-5" />
-                              <h3 className="font-bold text-white">Servicios Requeridos</h3>
-                          </div>
-                          <p className="text-sm text-slate-300">{data.memoriaDescriptiva.serviciosRequeridos}</p>
-                      </div>
-
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8">
                       <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
                           <div className="flex items-center gap-2 mb-4 text-eng-400">
                               <ListOrdered className="w-5 h-5" />
@@ -504,18 +685,27 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                               ))}
                           </ol>
                       </div>
+                      
+                      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+                          <div className="flex items-center gap-2 mb-4 text-eng-400">
+                              <Check className="w-5 h-5" />
+                              <h3 className="font-bold text-white">Conclusiones</h3>
+                          </div>
+                          <p className="text-sm text-slate-300">{data.memoriaDescriptiva.conclusiones}</p>
+                      </div>
                   </div>
                </div>
             </div>
           </div>
         )}
 
-        {/* --- TAB CALCULOS --- */}
+        {/* --- TAB CALCULOS (RESUMEN TARJETAS) --- */}
         {activeTab === 'calculos' && (
              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {data.memoriaCalculo.map((calc, idx) => (
                    <CalculationCard key={idx} item={calc} />
               ))}
+              {data.memoriaCalculo.length === 0 && <div className="col-span-3 text-center text-slate-500 py-10">Generando cálculos...</div>}
             </div>
         )}
 
