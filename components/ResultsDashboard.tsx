@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ProjectResponse, Partida, APUItem, PresupuestoConfig, APU } from '../types';
 import CalculationCard from './CalculationCard';
 import { saveProject } from '../services/storageService';
+import * as XLSX from 'xlsx'; // Import XLSX library
 import { 
   FileText, 
   Calculator, 
@@ -31,7 +32,9 @@ import {
   Check,
   Download,
   BookOpen,
-  StopCircle
+  StopCircle,
+  PackageCheck,
+  Hammer
 } from 'lucide-react';
 import {
   PieChart,
@@ -69,6 +72,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
   const [data, setData] = useState<ProjectResponse>(initialData);
   const [activeTab, setActiveTab] = useState<'memoria' | 'calculos' | 'presupuesto' | 'apu'>('memoria');
   const [expandedApuIndex, setExpandedApuIndex] = useState<number | null>(0);
+  const [expandedBudgetRow, setExpandedBudgetRow] = useState<string | null>(null); // State for budget table expansion
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [apuSearchTerm, setApuSearchTerm] = useState('');
@@ -126,7 +130,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
     }
   };
 
-  // --- LÓGICA DE CÁLCULO APU --- (Same as before)
+  // --- LÓGICA DE CÁLCULO APU ---
   const recalculatePartida = (partida: Partida): Partida => {
     const calculateMaterialTotal = (item: APUItem) => {
         const wasteFactor = 1 + ((item.desperdicio || 0) / 100);
@@ -135,11 +139,14 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
     const totalMateriales = partida.apu.materiales.reduce((acc, item) => acc + calculateMaterialTotal(item), 0);
     const calculateSimpleTotal = (item: APUItem) => item.cantidad * item.costoUnitario;
     const totalEquipos = partida.apu.equipos.reduce((acc, item) => acc + calculateSimpleTotal(item), 0);
+    
+    // Cálculo Mano de Obra estilo Lulo (Base + CAS + Bono)
     const totalLaborBase = partida.apu.manoDeObra.reduce((acc, item) => acc + calculateSimpleTotal(item), 0);
     const montoCAS = totalLaborBase * (partida.apu.laborCASPorcentaje / 100);
     const totalHombresDia = partida.apu.manoDeObra.reduce((acc, item) => acc + item.cantidad, 0);
     const montoBono = totalHombresDia * partida.apu.laborCestaTicket;
     const totalManoDeObra = totalLaborBase + montoCAS + montoBono;
+
     const costoDirecto = totalMateriales + totalEquipos + totalManoDeObra;
     const adminMonto = costoDirecto * (partida.apu.administracionPorcentaje / 100);
     const subtotalB = costoDirecto + adminMonto;
@@ -251,7 +258,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
 
   const sortedBudget = getSortedAndFilteredBudget();
 
-  // --- EXPORT FUNCTIONS ---
+  // --- EXPORT FUNCTIONS (UPDATED TO EXCEL) ---
   
   const downloadMemoriaMarkdown = () => {
     let md = `# ${data.projectTitle}\n\n`;
@@ -296,70 +303,296 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
     setShowExportMenu(false);
   };
 
-  const downloadBudgetCSV = () => {
-    let csv = "Codigo;Descripcion;Unidad;Metrado;Precio Unitario;Precio Total\n";
-    data.presupuesto.forEach(p => {
-        // Escape quotes for CSV
-        const desc = p.descripcion.replace(/"/g, '""');
-        csv += `${p.codigo};"${desc}";${p.unidad};${p.metrado.toFixed(2)};${p.precioUnitario.toFixed(2)};${p.precioTotal.toFixed(2)}\n`;
+  // --- EXCEL EXPORT FUNCTIONS (IMPROVED) ---
+
+  const downloadBudgetExcel = () => {
+    const totalPresupuesto = data.presupuesto.reduce((acc, item) => acc + item.precioTotal, 0);
+    const montoIVA = totalPresupuesto * (data.presupuestoConfig.porcentajeIVA / 100);
+    const totalGeneral = totalPresupuesto + montoIVA;
+
+    const rows: any[][] = [];
+    
+    // Header Info (Merged look)
+    rows.push(["PRESUPUESTO DE OBRA"]);
+    rows.push([`PROYECTO: ${data.projectTitle}`]);
+    rows.push([`DISCIPLINA: ${data.discipline}`]);
+    rows.push([`FECHA: ${new Date().toLocaleDateString()}`]);
+    rows.push([]); 
+
+    // Table Header
+    rows.push(["Nº", "CÓDIGO", "DESCRIPCIÓN DE LA PARTIDA", "UNIDAD", "CANTIDAD", "P. UNITARIO", "TOTAL"]);
+
+    // Items
+    data.presupuesto.forEach((p, idx) => {
+        rows.push([
+            idx + 1,
+            p.codigo,
+            p.descripcion,
+            p.unidad,
+            { v: p.metrado, t: 'n' }, // Force number type for Excel formulas
+            { v: p.precioUnitario, t: 'n', z: '#,##0.00' }, // Currency format
+            { v: p.precioTotal, t: 'n', z: '#,##0.00' }
+        ]);
     });
-    downloadFile(csv, `Presupuesto_${data.projectTitle.replace(/\s+/g, '_')}.csv`, 'text/csv');
+
+    // Footer
+    rows.push([]);
+    rows.push(["", "", "", "", "", "SUBTOTAL:", { v: totalPresupuesto, t: 'n', z: '#,##0.00' }]);
+    rows.push(["", "", "", "", "", `IVA (${data.presupuestoConfig.porcentajeIVA}%):`, { v: montoIVA, t: 'n', z: '#,##0.00' }]);
+    rows.push(["", "", "", "", "", "TOTAL GENERAL:", { v: totalGeneral, t: 'n', z: '#,##0.00' }]);
+
+    // Create Sheet
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+
+    // Set Column Widths (Aesthetically pleasing)
+    ws['!cols'] = [
+        { wch: 5 },  // No
+        { wch: 15 }, // Codigo
+        { wch: 70 }, // Descripcion
+        { wch: 10 }, // Unidad
+        { wch: 15 }, // Cantidad
+        { wch: 20 }, // PU
+        { wch: 20 }  // Total
+    ];
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Presupuesto General");
+    XLSX.writeFile(wb, `Presupuesto_${data.projectTitle.replace(/\s+/g, '_')}.xlsx`);
     setShowExportMenu(false);
   };
 
-  const downloadAllAPUs = () => {
-    let txt = `LIBRO DE ANÁLISIS DE PRECIOS UNITARIOS (APU)\n`;
-    txt += `PROYECTO: ${data.projectTitle}\n`;
-    txt += `FECHA: ${new Date().toLocaleDateString()}\n`;
-    txt += `================================================================================\n\n`;
+  const downloadMaterialsExcel = () => {
+    // This function creates a Bill of Materials (BOM) report
+    const wb = XLSX.utils.book_new();
+    
+    // SHEET 1: Detailed Breakdown Per Partida
+    const detailedRows: any[][] = [];
+    detailedRows.push(["DESGLOSE DETALLADO DE MATERIALES POR PARTIDA"]);
+    detailedRows.push([`PROYECTO: ${data.projectTitle}`]);
+    detailedRows.push([]);
+    detailedRows.push(["CÓD. PARTIDA", "DESCRIPCIÓN PARTIDA", "MATERIAL (INSUMO)", "UNIDAD", "CANTIDAD (UNIT)", "DESPERDICIO %", "PRECIO UNITARIO", "SUBTOTAL MATERIAL (Por Unidad de Partida)"]);
 
     data.presupuesto.forEach((p) => {
-        txt += `PARTIDA: ${p.codigo}\n`;
-        txt += `DESCRIPCIÓN: ${p.descripcion}\n`;
-        txt += `UNIDAD: ${p.unidad}   CANTIDAD: ${p.metrado.toFixed(2)}   RENDIMIENTO: ${p.apu.rendimiento} ${p.apu.rendimientoUnidad}\n`;
-        txt += `--------------------------------------------------------------------------------\n`;
-        
-        txt += `MATERIALES\n`;
-        txt += `Descripcion | Unidad | Cantidad | Costo | Total\n`;
-        p.apu.materiales.forEach(m => {
-            txt += `${m.descripcion.padEnd(40)} | ${m.unidad.padEnd(5)} | ${m.cantidad.toFixed(4).padEnd(8)} | ${m.costoUnitario.toFixed(2).padEnd(8)} | ${m.total.toFixed(2)}\n`;
-        });
-        const totalMat = p.apu.materiales.reduce((a,b)=>a+b.total,0);
-        txt += `> Total Materiales: ${totalMat.toFixed(2)}\n\n`;
+      // Row for the Partida (Merged style header within table)
+      // We will list materials below
+      if (p.apu.materiales.length > 0) {
+        let totalMaterialPartida = 0;
+        p.apu.materiales.forEach((m) => {
+          const wasteFactor = 1 + ((m.desperdicio || 0) / 100);
+          const subtotalMat = m.cantidad * m.costoUnitario * wasteFactor;
+          totalMaterialPartida += subtotalMat;
 
-        txt += `EQUIPOS\n`;
-        p.apu.equipos.forEach(m => {
-            txt += `${m.descripcion.padEnd(40)} | ${'DIA'.padEnd(5)} | ${m.cantidad.toFixed(4).padEnd(8)} | ${m.costoUnitario.toFixed(2).padEnd(8)} | ${m.total.toFixed(2)}\n`;
+          detailedRows.push([
+            p.codigo,
+            p.descripcion,
+            m.descripcion,
+            m.unidad,
+            { v: m.cantidad, t: 'n' },
+            { v: m.desperdicio || 0, t: 'n' },
+            { v: m.costoUnitario, t: 'n', z: '#,##0.00' },
+            { v: subtotalMat, t: 'n', z: '#,##0.00' }
+          ]);
         });
-        const totalEq = p.apu.equipos.reduce((a,b)=>a+b.total,0);
-        txt += `> Total Equipos: ${totalEq.toFixed(2)}\n\n`;
-
-        txt += `MANO DE OBRA\n`;
-        p.apu.manoDeObra.forEach(m => {
-            txt += `${m.descripcion.padEnd(40)} | ${'JRN'.padEnd(5)} | ${m.cantidad.toFixed(4).padEnd(8)} | ${m.costoUnitario.toFixed(2).padEnd(8)} | ${m.total.toFixed(2)}\n`;
-        });
-        const totalMO = p.apu.manoDeObra.reduce((a,b)=>a+b.total,0);
-        const cas = totalMO * (p.apu.laborCASPorcentaje/100);
-        const bonos = p.apu.manoDeObra.reduce((a,b)=>a+b.cantidad,0) * p.apu.laborCestaTicket;
-        txt += `  - Subtotal MO: ${totalMO.toFixed(2)}\n`;
-        txt += `  - Prestaciones (${p.apu.laborCASPorcentaje}%): ${cas.toFixed(2)}\n`;
-        txt += `  - Bonos Alimentación: ${bonos.toFixed(2)}\n`;
-        const totalMOTotal = totalMO + cas + bonos;
-        txt += `> Total Mano de Obra: ${totalMOTotal.toFixed(2)}\n\n`;
-
-        const costoDirecto = totalMat + totalEq + totalMOTotal;
-        const admin = costoDirecto * (p.apu.administracionPorcentaje/100);
-        const utilidad = (costoDirecto + admin) * (p.apu.utilidadPorcentaje/100);
-        
-        txt += `RESUMEN PARTIDA\n`;
-        txt += `COSTO DIRECTO:      ${costoDirecto.toFixed(2)}\n`;
-        txt += `ADMINISTRACIÓN:     ${admin.toFixed(2)}\n`;
-        txt += `UTILIDAD:           ${utilidad.toFixed(2)}\n`;
-        txt += `PRECIO UNITARIO:    ${p.precioUnitario.toFixed(2)}\n`;
-        txt += `================================================================================\n\n`;
+        // Optional: Add a summary line for the partida materials? 
+        // For raw data export, it's often better to keep it flat, but user asked for "sumatory per partida"
+        detailedRows.push(["", "", "TOTAL MATERIALES PARTIDA " + p.codigo, "", "", "", "", { v: totalMaterialPartida, t: 'n', z: '#,##0.00', s: { font: { bold: true } } }]);
+        detailedRows.push([]); // Spacer
+      }
     });
 
-    downloadFile(txt, `Libro_APU_${data.projectTitle.replace(/\s+/g, '_')}.txt`, 'text/plain');
+    const wsDetailed = XLSX.utils.aoa_to_sheet(detailedRows);
+    wsDetailed['!cols'] = [{ wch: 15 }, { wch: 50 }, { wch: 40 }, { wch: 10 }, { wch: 15 }, { wch: 15 }, { wch: 15 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, wsDetailed, "Desglose por Partida");
+
+    // SHEET 2: Consolidated Global Materials (Shopping List)
+    const consolidatedRows: any[][] = [];
+    consolidatedRows.push(["LISTADO CONSOLIDADO DE COMPRA (INSUMOS TOTALES)"]);
+    consolidatedRows.push([`PROYECTO: ${data.projectTitle}`]);
+    consolidatedRows.push([]);
+    consolidatedRows.push(["DESCRIPCIÓN MATERIAL", "UNIDAD", "CANTIDAD TOTAL REQUERIDA", "COSTO ESTIMADO TOTAL"]);
+
+    const materialsMap = new Map<string, { unit: string, qty: number, cost: number }>();
+
+    data.presupuesto.forEach(p => {
+       const partidaQty = p.metrado;
+       p.apu.materiales.forEach(m => {
+          // Normalize name to aggregate correctly
+          const key = m.descripcion.trim().toLowerCase();
+          const wasteFactor = 1 + ((m.desperdicio || 0) / 100);
+          const unitQty = m.cantidad * wasteFactor;
+          const totalQtyForPartida = unitQty * partidaQty;
+          const totalCostForPartida = totalQtyForPartida * m.costoUnitario;
+
+          if (materialsMap.has(key)) {
+             const existing = materialsMap.get(key)!;
+             existing.qty += totalQtyForPartida;
+             existing.cost += totalCostForPartida;
+          } else {
+             materialsMap.set(key, { unit: m.unidad, qty: totalQtyForPartida, cost: totalCostForPartida });
+          }
+       });
+    });
+
+    // Convert map to array and sort
+    const consolidatedList = Array.from(materialsMap.entries()).map(([name, data]) => ({
+       name: name.charAt(0).toUpperCase() + name.slice(1), // Capitalize
+       ...data
+    })).sort((a,b) => a.name.localeCompare(b.name));
+
+    consolidatedList.forEach(item => {
+       consolidatedRows.push([
+         item.name,
+         item.unit,
+         { v: item.qty, t: 'n', z: '#,##0.00' },
+         { v: item.cost, t: 'n', z: '#,##0.00' }
+       ]);
+    });
+    
+    // Total Material Cost
+    const totalMaterialCost = consolidatedList.reduce((acc, item) => acc + item.cost, 0);
+    consolidatedRows.push(["", "", "TOTAL GENERAL INSUMOS", { v: totalMaterialCost, t: 'n', z: '#,##0.00' }]);
+
+    const wsConsolidated = XLSX.utils.aoa_to_sheet(consolidatedRows);
+    wsConsolidated['!cols'] = [{ wch: 60 }, { wch: 10 }, { wch: 25 }, { wch: 25 }];
+    XLSX.utils.book_append_sheet(wb, wsConsolidated, "Insumos Consolidados");
+
+    XLSX.writeFile(wb, `Listado_Materiales_${data.projectTitle.replace(/\s+/g, '_')}.xlsx`);
+    setShowExportMenu(false);
+  };
+
+  const downloadAPUExcel = () => {
+    const wb = XLSX.utils.book_new();
+
+    data.presupuesto.forEach(p => {
+        const rows: any[][] = [];
+        
+        // --- Header Partida ---
+        rows.push(["ANÁLISIS DE PRECIO UNITARIO"]);
+        rows.push(["OBRA:", data.projectTitle]);
+        rows.push(["PARTIDA:", p.codigo, "FECHA:", new Date().toLocaleDateString()]);
+        rows.push(["DESCRIPCIÓN:", p.descripcion]);
+        rows.push(["UNIDAD:", p.unidad, "CANTIDAD:", { v: p.metrado, t: 'n' }]);
+        rows.push(["RENDIMIENTO:", { v: p.apu.rendimiento, t: 'n' }, p.apu.rendimientoUnidad]);
+        rows.push([]); // Spacer
+        
+        // --- 1. Materiales ---
+        rows.push(["1. MATERIALES"]);
+        rows.push(["Descripción", "Unidad", "Cantidad", "% Desp.", "Costo Unit.", "Total"]);
+        
+        p.apu.materiales.forEach(m => {
+            rows.push([
+              m.descripcion, 
+              m.unidad, 
+              { v: m.cantidad, t: 'n' }, 
+              { v: m.desperdicio, t: 'n' }, 
+              { v: m.costoUnitario, t: 'n', z: '#,##0.00' }, 
+              { v: m.total, t: 'n', z: '#,##0.00' }
+            ]);
+        });
+        
+        const totalMat = p.apu.materiales.reduce((a,b)=>a+b.total,0);
+        rows.push(["", "", "", "", "TOTAL MATERIALES:", { v: totalMat, t: 'n', z: '#,##0.00' }]);
+        rows.push([]);
+
+        // --- 2. Equipos ---
+        rows.push(["2. EQUIPOS"]);
+        rows.push(["Descripción", "", "Cantidad", "Costo/Día", "", "Total"]); 
+        
+        p.apu.equipos.forEach(m => {
+            rows.push([
+              m.descripcion, 
+              "", 
+              { v: m.cantidad, t: 'n' }, 
+              { v: m.costoUnitario, t: 'n', z: '#,##0.00' }, 
+              "", 
+              { v: m.total, t: 'n', z: '#,##0.00' }
+            ]);
+        });
+        
+        const totalEq = p.apu.equipos.reduce((a,b)=>a+b.total,0);
+        rows.push(["", "", "", "", "TOTAL EQUIPOS:", { v: totalEq, t: 'n', z: '#,##0.00' }]);
+        rows.push([]);
+
+        // --- 3. Mano de Obra ---
+        rows.push(["3. MANO DE OBRA"]);
+        rows.push(["Descripción", "", "Cantidad", "Jornal", "", "Total"]);
+        
+        p.apu.manoDeObra.forEach(m => {
+            rows.push([
+              m.descripcion, 
+              "", 
+              { v: m.cantidad, t: 'n' }, 
+              { v: m.costoUnitario, t: 'n', z: '#,##0.00' }, 
+              "", 
+              { v: m.total, t: 'n', z: '#,##0.00' }
+            ]);
+        });
+        
+        // Calculate Labor Totals Lulo Style
+        const subtotalLaborBase = p.apu.manoDeObra.reduce((a,b)=>a+b.total,0);
+        const montoCAS = subtotalLaborBase * (p.apu.laborCASPorcentaje/100);
+        const totalHombresDia = p.apu.manoDeObra.reduce((a,b)=>a+b.cantidad,0);
+        const montoBono = totalHombresDia * p.apu.laborCestaTicket;
+        const totalManoDeObra = subtotalLaborBase + montoCAS + montoBono;
+
+        rows.push(["", "", "", "", "Subtotal Salarios:", { v: subtotalLaborBase, t: 'n', z: '#,##0.00' }]);
+        rows.push(["", "", "", "", `Prestaciones Sociales (${p.apu.laborCASPorcentaje}%):`, { v: montoCAS, t: 'n', z: '#,##0.00' }]);
+        rows.push(["", "", "", "", "Bono Alimentación (Cesta Ticket):", { v: montoBono, t: 'n', z: '#,##0.00' }]);
+        // This is the line that sums up previous 3
+        rows.push(["", "", "", "", "TOTAL MANO DE OBRA:", { v: totalManoDeObra, t: 'n', z: '#,##0.00' }]); 
+        rows.push([]);
+
+        // --- Resumen ---
+        const costoDirecto = totalMat + totalEq + totalManoDeObra;
+        const admin = costoDirecto * (p.apu.administracionPorcentaje/100);
+        const subtotal = costoDirecto + admin;
+        const utilidad = subtotal * (p.apu.utilidadPorcentaje/100);
+        
+        rows.push(["RESUMEN DE COSTOS"]);
+        rows.push(["Concepto", "", "", "", "", "Monto"]);
+        rows.push(["A. TOTAL MATERIALES", "", "", "", "", { v: totalMat, t: 'n', z: '#,##0.00' }]);
+        rows.push(["B. TOTAL EQUIPOS", "", "", "", "", { v: totalEq, t: 'n', z: '#,##0.00' }]);
+        rows.push(["C. TOTAL MANO DE OBRA", "", "", "", "", { v: totalManoDeObra, t: 'n', z: '#,##0.00' }]);
+        
+        rows.push(["COSTO DIRECTO (A+B+C)", "", "", "", "", { v: costoDirecto, t: 'n', z: '#,##0.00' }]);
+        rows.push([`ADMINISTRACIÓN Y GASTOS (${p.apu.administracionPorcentaje}%)`, "", "", "", "", { v: admin, t: 'n', z: '#,##0.00' }]);
+        rows.push(["SUBTOTAL", "", "", "", "", { v: subtotal, t: 'n', z: '#,##0.00' }]);
+        rows.push([`UTILIDAD E IMPREVISTOS (${p.apu.utilidadPorcentaje}%)`, "", "", "", "", { v: utilidad, t: 'n', z: '#,##0.00' }]);
+        
+        let precioPrevio = subtotal + utilidad;
+        if (p.factorAjuste) {
+             const ajuste = precioPrevio * (p.factorAjuste/100);
+             rows.push([`FACTOR DE AJUSTE (${p.factorAjuste}%)`, "", "", "", "", { v: ajuste, t: 'n', z: '#,##0.00' }]);
+             precioPrevio += ajuste;
+        }
+
+        rows.push(["PRECIO UNITARIO FINAL", "", "", "", "", { v: p.precioUnitario, t: 'n', z: '#,##0.00' }]);
+
+        // Create the sheet for this APU
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+
+        // Styling Columns
+        ws['!cols'] = [
+            { wch: 45 }, // A: Description
+            { wch: 8 },  // B: Unit
+            { wch: 10 }, // C: Qty
+            { wch: 10 }, // D: Rate
+            { wch: 15 }, // E: Unit Cost (Label)
+            { wch: 15 }  // F: Total Cost
+        ];
+
+        // Sheet Name Sanitization
+        let safeName = p.codigo.replace(/[:\/\\?*\[\]]/g, "_").substring(0, 30);
+        if (!safeName) safeName = `Partida_${Math.floor(Math.random()*1000)}`;
+
+        try {
+            XLSX.utils.book_append_sheet(wb, ws, safeName);
+        } catch (e) {
+            XLSX.utils.book_append_sheet(wb, ws, `${safeName}_${Math.floor(Math.random()*100)}`);
+        }
+    });
+
+    XLSX.writeFile(wb, `APUs_${data.projectTitle.replace(/\s+/g, '_')}.xlsx`);
     setShowExportMenu(false);
   };
 
@@ -416,6 +649,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                 <li>"Desglosa mejor las partidas eléctricas"</li>
                                 <li>"Agrega cálculo detallado para el tanque de agua"</li>
                                 <li>"Cambia el rendimiento del concreto a 20 m3/día"</li>
+                                <li>"Detalla más los materiales de las partidas de plomería (pega, codos, etc.)"</li>
                             </ul>
                         </div>
                      )}
@@ -528,11 +762,14 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                       <button onClick={downloadCalculationMemory} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2">
                           <Calculator className="w-4 h-4 text-orange-400" /> Memoria de Cálculo (TXT)
                       </button>
-                      <button onClick={downloadBudgetCSV} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2">
-                          <FileSpreadsheet className="w-4 h-4 text-green-400" /> Presupuesto (CSV)
+                      <button onClick={downloadBudgetExcel} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2">
+                          <FileSpreadsheet className="w-4 h-4 text-green-400" /> Presupuesto (Excel)
                       </button>
-                      <button onClick={downloadAllAPUs} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2 border-t border-slate-700 bg-slate-750">
-                          <BookOpen className="w-4 h-4 text-purple-400" /> Libro de APUs (Detallado)
+                      <button onClick={downloadMaterialsExcel} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2">
+                          <PackageCheck className="w-4 h-4 text-yellow-400" /> Listado Materiales (Excel)
+                      </button>
+                      <button onClick={downloadAPUExcel} className="w-full text-left px-4 py-3 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-2 border-t border-slate-700 bg-slate-750">
+                          <BookOpen className="w-4 h-4 text-purple-400" /> Libro de APUs (Excel)
                       </button>
                   </div>
                 )}
@@ -736,6 +973,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                   <table className="w-full text-sm text-left text-slate-300">
                     <thead className="text-xs text-slate-400 uppercase bg-slate-900/50 cursor-pointer select-none">
                       <tr>
+                        <th className="w-10 px-2 py-3"></th> {/* Expansion Toggle */}
                         <th className="px-4 py-3 hover:text-white" onClick={() => handleSort('codigo')}>
                             <div className="flex items-center gap-1">Código <ArrowUpDown className="w-3 h-3" /></div>
                         </th>
@@ -755,7 +993,16 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                     </thead>
                     <tbody className="divide-y divide-slate-700">
                       {sortedBudget.map((partida) => (
-                        <tr key={partida.codigo} className="hover:bg-slate-700/30 transition-colors">
+                        <React.Fragment key={partida.codigo}>
+                        <tr className={`hover:bg-slate-700/30 transition-colors ${expandedBudgetRow === partida.codigo ? 'bg-slate-800/80' : ''}`}>
+                          <td className="px-2 py-3 text-center">
+                              <button 
+                                onClick={() => setExpandedBudgetRow(expandedBudgetRow === partida.codigo ? null : partida.codigo)}
+                                className="text-slate-500 hover:text-eng-400 transition-colors"
+                              >
+                                {expandedBudgetRow === partida.codigo ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                              </button>
+                          </td>
                           <td className="px-4 py-3 font-mono text-xs text-slate-400">{partida.codigo}</td>
                           <td className="px-4 py-3 font-medium text-slate-200">
                               {partida.descripcion}
@@ -782,21 +1029,72 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                               ${partida.precioTotal.toLocaleString(undefined, {minimumFractionDigits: 2})}
                           </td>
                         </tr>
+                        {/* SUBMENU: EXPANDED MATERIAL DETAILS */}
+                        {expandedBudgetRow === partida.codigo && (
+                           <tr className="bg-slate-900/40 animate-fade-in-down">
+                              <td colSpan={6} className="p-0">
+                                 <div className="p-4 pl-12 border-l-2 border-eng-500 m-2 ml-4 bg-slate-950/30 rounded-r-lg">
+                                    <h4 className="text-xs font-bold text-eng-400 mb-3 flex items-center gap-2">
+                                       <PackageCheck className="w-3 h-3" />
+                                       LISTA DETALLADA DE MATERIALES
+                                    </h4>
+                                    <div className="overflow-x-auto">
+                                       <table className="w-full text-xs text-left">
+                                          <thead>
+                                             <tr className="text-slate-500 border-b border-slate-700/50">
+                                                <th className="pb-2 font-medium">Descripción Material</th>
+                                                <th className="pb-2 text-right">Cant. Unitaria</th>
+                                                <th className="pb-2 text-right">Costo Unit.</th>
+                                                <th className="pb-2 text-right">Subtotal</th>
+                                                <th className="pb-2 text-right w-32">Total Partida ({partida.metrado})</th>
+                                             </tr>
+                                          </thead>
+                                          <tbody className="text-slate-300 divide-y divide-slate-800/50">
+                                             {partida.apu.materiales.map((mat, mIdx) => {
+                                                const subtotal = mat.cantidad * mat.costoUnitario * (1 + (mat.desperdicio || 0)/100);
+                                                return (
+                                                   <tr key={mIdx}>
+                                                      <td className="py-2 pr-2">{mat.descripcion}</td>
+                                                      <td className="py-2 text-right text-slate-400">{mat.cantidad} {mat.unidad}</td>
+                                                      <td className="py-2 text-right font-mono">${mat.costoUnitario.toFixed(2)}</td>
+                                                      <td className="py-2 text-right font-mono">${subtotal.toFixed(2)}</td>
+                                                      <td className="py-2 text-right font-mono font-bold text-eng-300">
+                                                         ${(subtotal * partida.metrado).toLocaleString(undefined, {minimumFractionDigits: 2})}
+                                                      </td>
+                                                   </tr>
+                                                );
+                                             })}
+                                             {partida.apu.materiales.length === 0 && (
+                                                <tr>
+                                                   <td colSpan={5} className="py-4 text-center text-slate-600 italic">No hay materiales desglosados para esta partida.</td>
+                                                </tr>
+                                             )}
+                                          </tbody>
+                                       </table>
+                                    </div>
+                                    <div className="mt-2 text-[10px] text-slate-500 text-right">
+                                       * Incluye desperdicios. Ver detalle completo en pestaña APU.
+                                    </div>
+                                 </div>
+                              </td>
+                           </tr>
+                        )}
+                        </React.Fragment>
                       ))}
                       {sortedBudget.length === 0 && (
                           <tr>
-                              <td colSpan={5} className="text-center py-8 text-slate-500 italic">No se encontraron partidas con ese filtro.</td>
+                              <td colSpan={6} className="text-center py-8 text-slate-500 italic">No se encontraron partidas con ese filtro.</td>
                           </tr>
                       )}
                     </tbody>
                     <tfoot className="bg-slate-900 border-t border-slate-700">
                          <tr>
-                            <td colSpan={3} className="px-4 py-3 text-right font-medium text-slate-400">SUBTOTAL GENERAL</td>
+                            <td colSpan={4} className="px-4 py-3 text-right font-medium text-slate-400">SUBTOTAL GENERAL</td>
                             <td className="px-4 py-3 text-right font-mono text-slate-300">${totalPresupuesto.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                             <td></td>
                          </tr>
                          <tr>
-                            <td colSpan={3} className="px-4 py-3 text-right font-medium text-slate-400 flex items-center justify-end gap-2">
+                            <td colSpan={4} className="px-4 py-3 text-right font-medium text-slate-400 flex items-center justify-end gap-2">
                                 IVA 
                                 {isEditing ? <input className="w-12 bg-slate-800 text-right border border-slate-600 rounded px-1 text-white" value={data.presupuestoConfig.porcentajeIVA} onChange={(e)=>handleConfigChange('porcentajeIVA', e.target.value)} /> : `(${data.presupuestoConfig.porcentajeIVA}%)`}
                             </td>
@@ -804,7 +1102,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                             <td></td>
                          </tr>
                          <tr>
-                            <td colSpan={3} className="px-4 py-3 text-right font-bold text-white text-lg">TOTAL PRESUPUESTO</td>
+                            <td colSpan={4} className="px-4 py-3 text-right font-bold text-white text-lg">TOTAL PRESUPUESTO</td>
                             <td className="px-4 py-3 text-right font-mono font-bold text-eng-400 text-lg">${totalGeneral.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
                             <td></td>
                          </tr>
@@ -887,8 +1185,9 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                             <div className="p-2 border-r border-t border-slate-300 font-bold bg-slate-200 text-slate-900">Rendimiento:</div>
                                             <div className="p-2 border-r border-t border-slate-300 col-span-3 flex items-center gap-2 text-slate-900 bg-yellow-50">
                                                 <input 
-                                                    className="w-24 border border-slate-400 px-2 py-0.5 bg-white text-slate-900 font-bold" 
+                                                    className="w-24 border-0 border-b border-slate-400 px-1 bg-transparent text-slate-900 font-bold focus:ring-0 text-right" 
                                                     type="number" 
+                                                    step="any"
                                                     value={partida.apu.rendimiento} 
                                                     onChange={(e) => handleAPUGlobalChange(originalIndex, 'rendimiento', e.target.value, 'number')} 
                                                 />
@@ -918,13 +1217,13 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                                               <td className="p-1 px-2">{m.descripcion}</td>
                                                               <td className="text-center p-1">{m.unidad}</td>
                                                               <td className="text-right p-1">
-                                                                  <input className="w-full text-right border border-gray-300 bg-white text-slate-900 px-1 focus:bg-yellow-50" type="number" value={m.cantidad} onChange={(e) => handleAPUItemChange(originalIndex, 'materiales', i, 'cantidad', e.target.value)}/>
+                                                                  <input className="w-full text-right border-0 bg-transparent text-slate-900 px-1 focus:bg-yellow-100 outline-none" type="number" step="any" value={m.cantidad} onChange={(e) => handleAPUItemChange(originalIndex, 'materiales', i, 'cantidad', e.target.value)}/>
                                                               </td>
                                                               <td className="text-right p-1">
-                                                                  <input className="w-full text-right border border-gray-300 bg-white text-slate-900 px-1 focus:bg-yellow-50" type="number" value={m.desperdicio} onChange={(e) => handleAPUItemChange(originalIndex, 'materiales', i, 'desperdicio', e.target.value)}/>
+                                                                  <input className="w-full text-right border-0 bg-transparent text-slate-900 px-1 focus:bg-yellow-100 outline-none" type="number" step="any" value={m.desperdicio} onChange={(e) => handleAPUItemChange(originalIndex, 'materiales', i, 'desperdicio', e.target.value)}/>
                                                               </td>
                                                               <td className="text-right p-1">
-                                                                  <input className="w-full text-right border border-gray-300 bg-white text-slate-900 px-1 focus:bg-yellow-50" type="number" value={m.costoUnitario} onChange={(e) => handleAPUItemChange(originalIndex, 'materiales', i, 'costoUnitario', e.target.value)}/>
+                                                                  <input className="w-full text-right border-0 bg-transparent text-slate-900 px-1 focus:bg-yellow-100 outline-none" type="number" step="any" value={m.costoUnitario} onChange={(e) => handleAPUItemChange(originalIndex, 'materiales', i, 'costoUnitario', e.target.value)}/>
                                                               </td>
                                                               <td className="text-right p-1 px-2 font-bold">{m.total.toFixed(2)}</td>
                                                           </tr>
@@ -953,10 +1252,10 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                                           <tr key={i} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
                                                               <td className="p-1 px-2">{m.descripcion}</td>
                                                               <td className="text-right p-1">
-                                                                  <input className="w-full text-right border border-gray-300 bg-white text-slate-900 px-1 focus:bg-yellow-50" type="number" value={m.cantidad} onChange={(e) => handleAPUItemChange(originalIndex, 'equipos', i, 'cantidad', e.target.value)}/>
+                                                                  <input className="w-full text-right border-0 bg-transparent text-slate-900 px-1 focus:bg-yellow-100 outline-none" type="number" step="any" value={m.cantidad} onChange={(e) => handleAPUItemChange(originalIndex, 'equipos', i, 'cantidad', e.target.value)}/>
                                                               </td>
                                                               <td className="text-right p-1">
-                                                                  <input className="w-full text-right border border-gray-300 bg-white text-slate-900 px-1 focus:bg-yellow-50" type="number" value={m.costoUnitario} onChange={(e) => handleAPUItemChange(originalIndex, 'equipos', i, 'costoUnitario', e.target.value)}/>
+                                                                  <input className="w-full text-right border-0 bg-transparent text-slate-900 px-1 focus:bg-yellow-100 outline-none" type="number" step="any" value={m.costoUnitario} onChange={(e) => handleAPUItemChange(originalIndex, 'equipos', i, 'costoUnitario', e.target.value)}/>
                                                               </td>
                                                               <td className="text-right p-1 px-2 font-bold">{m.total.toFixed(2)}</td>
                                                           </tr>
@@ -985,10 +1284,10 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                                           <tr key={i} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
                                                               <td className="p-1 px-2">{m.descripcion}</td>
                                                               <td className="text-right p-1">
-                                                                  <input className="w-full text-right border border-gray-300 bg-white text-slate-900 px-1 focus:bg-yellow-50" type="number" value={m.cantidad} onChange={(e) => handleAPUItemChange(originalIndex, 'manoDeObra', i, 'cantidad', e.target.value)}/>
+                                                                  <input className="w-full text-right border-0 bg-transparent text-slate-900 px-1 focus:bg-yellow-100 outline-none" type="number" step="any" value={m.cantidad} onChange={(e) => handleAPUItemChange(originalIndex, 'manoDeObra', i, 'cantidad', e.target.value)}/>
                                                               </td>
                                                               <td className="text-right p-1">
-                                                                  <input className="w-full text-right border border-gray-300 bg-white text-slate-900 px-1 focus:bg-yellow-50" type="number" value={m.costoUnitario} onChange={(e) => handleAPUItemChange(originalIndex, 'manoDeObra', i, 'costoUnitario', e.target.value)}/>
+                                                                  <input className="w-full text-right border-0 bg-transparent text-slate-900 px-1 focus:bg-yellow-100 outline-none" type="number" step="any" value={m.costoUnitario} onChange={(e) => handleAPUItemChange(originalIndex, 'manoDeObra', i, 'costoUnitario', e.target.value)}/>
                                                               </td>
                                                               <td className="text-right p-1 px-2 font-bold">{m.total.toFixed(2)}</td>
                                                           </tr>
@@ -999,7 +1298,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                               {/* Footer Mano de Obra (Calculos Laborales) */}
                                               <div className="bg-slate-50 p-3 border-t border-slate-300 space-y-2 text-slate-900">
                                                   <div className="flex justify-between border-b border-slate-200 pb-1">
-                                                      <span>Subtotal Mano de Obra (Base):</span>
+                                                      <span>Subtotal Salarios (Base):</span>
                                                       <span>{partida.apu.manoDeObra.reduce((a,b)=>a+b.total,0).toFixed(2)}</span>
                                                   </div>
                                                   
@@ -1008,7 +1307,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                                       <span className="flex items-center gap-2 font-semibold">
                                                           Prestaciones Sociales (CAS) %
                                                           <input 
-                                                            className="w-16 text-right border border-slate-300 bg-white text-slate-900 font-bold px-1 focus:ring-1 focus:ring-eng-500" 
+                                                            className="w-16 text-right border-0 border-b border-slate-400 bg-transparent text-slate-900 font-bold px-1 focus:ring-0" 
                                                             value={partida.apu.laborCASPorcentaje} 
                                                             onChange={(e)=>handleAPUGlobalChange(originalIndex, 'laborCASPorcentaje', e.target.value, 'number')} 
                                                           />
@@ -1021,7 +1320,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                                        <span className="flex items-center gap-2 font-semibold">
                                                           Bono Alimentación (Cesta Ticket) $/jornada
                                                           <input 
-                                                            className="w-16 text-right border border-slate-300 bg-white text-slate-900 font-bold px-1 focus:ring-1 focus:ring-eng-500" 
+                                                            className="w-16 text-right border-0 border-b border-slate-400 bg-transparent text-slate-900 font-bold px-1 focus:ring-0" 
                                                             value={partida.apu.laborCestaTicket} 
                                                             onChange={(e)=>handleAPUGlobalChange(originalIndex, 'laborCestaTicket', e.target.value, 'number')} 
                                                           />
@@ -1032,7 +1331,7 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                                   </div>
 
                                                   <div className="flex justify-between font-bold border-t border-slate-300 pt-2 text-slate-900 text-sm">
-                                                      <span>Total Mano de Obra + Beneficios:</span>
+                                                      <span>TOTAL MANO DE OBRA (Salarios + Prestaciones + Bonos):</span>
                                                       <span>
                                                           {(
                                                               partida.apu.manoDeObra.reduce((a,b)=>a+b.total,0) +
@@ -1049,10 +1348,11 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
                                               {(() => {
                                                   const mat = partida.apu.materiales.reduce((acc, c) => acc + c.total, 0);
                                                   const eq = partida.apu.equipos.reduce((acc, c) => acc + c.total, 0);
-                                                  const moBase = partida.apu.manoDeObra.reduce((acc, c) => acc + c.total, 0);
-                                                  const cas = moBase * (partida.apu.laborCASPorcentaje / 100);
-                                                  const bono = partida.apu.manoDeObra.reduce((acc,c) => acc+c.cantidad,0) * partida.apu.laborCestaTicket;
-                                                  const moTotal = moBase + cas + bono;
+                                                  // Calculo Lulo
+                                                  const laborBase = partida.apu.manoDeObra.reduce((acc, c) => acc + c.total, 0);
+                                                  const laborCAS = laborBase * (partida.apu.laborCASPorcentaje / 100);
+                                                  const laborBono = partida.apu.manoDeObra.reduce((acc, c) => acc + c.cantidad, 0) * partida.apu.laborCestaTicket;
+                                                  const moTotal = laborBase + laborCAS + laborBono;
                                                   
                                                   const cd = mat + eq + moTotal;
                                                   const admin = cd * (partida.apu.administracionPorcentaje / 100);
@@ -1064,8 +1364,19 @@ const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data: initialData, 
 
                                                   return (
                                                       <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-right font-mono text-slate-900 text-sm">
-                                                          <div className="text-slate-600 self-center">Costo Directo Unitario:</div>
-                                                          <div className="font-bold text-base bg-white border border-slate-200 p-1">{cd.toFixed(2)}</div>
+                                                          <div className="text-slate-600 self-center">A. TOTAL MATERIALES:</div>
+                                                          <div className="font-bold text-base bg-white border border-slate-200 p-1">{mat.toFixed(2)}</div>
+
+                                                          <div className="text-slate-600 self-center">B. TOTAL EQUIPOS:</div>
+                                                          <div className="font-bold text-base bg-white border border-slate-200 p-1">{eq.toFixed(2)}</div>
+
+                                                          <div className="text-slate-600 self-center">C. TOTAL MANO DE OBRA:</div>
+                                                          <div className="font-bold text-base bg-white border border-slate-200 p-1">{moTotal.toFixed(2)}</div>
+
+                                                          <div className="col-span-2 border-b border-slate-300 my-2"></div>
+
+                                                          <div className="text-slate-900 font-bold self-center">COSTO DIRECTO (A+B+C):</div>
+                                                          <div className="font-bold text-base bg-slate-100 border border-slate-300 p-1">{cd.toFixed(2)}</div>
                                                           
                                                           <div className="text-slate-600 flex justify-end items-center gap-2">
                                                               Administración y Gastos %

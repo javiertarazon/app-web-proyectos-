@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { AppSettings, CountryCode, Discipline, Standard, FileAttachment } from '../types';
 import { SUPPORTED_COUNTRIES, DISCIPLINES_LIST, STANDARDS_DB } from '../data/standardsData';
+import { LLS_ELECTRIC_CATALOG } from '../data/materialsCatalogs';
 import { saveSettings, loadSettings, addCustomStandard, removeCustomStandard } from '../services/settingsService';
-import { Settings, Globe, Book, FileText, Upload, X, Check, Search, Download } from 'lucide-react';
+import { Settings, Globe, Book, FileText, Upload, X, Check, Search, Download, ShoppingBag } from 'lucide-react';
 
 interface SettingsPanelProps {
   onClose: () => void;
@@ -158,9 +159,32 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
                   <div className="text-center py-10 text-slate-500 italic">No hay normas registradas para esta disciplina en este país.</div>
                 )}
               </div>
-              <p className="text-xs text-slate-500 text-center pt-4">
-                La descarga te redirigirá a una búsqueda externa. La IA ya tiene conocimiento interno de los parámetros principales de estas normas.
-              </p>
+
+              {/* SECTION FOR ACTIVE CATALOGS */}
+              <div className="mt-8 border-t border-slate-700 pt-6">
+                <h3 className="font-bold text-white text-lg mb-4 flex items-center gap-2">
+                  <ShoppingBag className="w-5 h-5 text-orange-500" />
+                  Catálogos de Proveedores Activos
+                </h3>
+                <div className="bg-orange-950/20 border border-orange-900/50 p-4 rounded-xl">
+                    <div className="flex items-start justify-between">
+                        <div>
+                            <h4 className="text-orange-200 font-bold text-sm">{LLS_ELECTRIC_CATALOG.name}</h4>
+                            <p className="text-xs text-orange-200/70 mt-1">{LLS_ELECTRIC_CATALOG.description}</p>
+                            <a href={LLS_ELECTRIC_CATALOG.url} target="_blank" className="text-[10px] text-blue-400 hover:underline mt-2 block">Ver Fuente Original</a>
+                        </div>
+                        <span className="bg-orange-900 text-orange-200 text-[10px] px-2 py-1 rounded-full uppercase font-bold tracking-wider">Integrado</span>
+                    </div>
+                    <div className="mt-3 text-xs text-slate-400 grid grid-cols-2 gap-2">
+                        {LLS_ELECTRIC_CATALOG.products.slice(0, 4).map((p, i) => (
+                           <div key={i} className="bg-slate-900/50 p-1.5 rounded border border-slate-700/50 truncate">
+                              - {p.name}
+                           </div>
+                        ))}
+                        {LLS_ELECTRIC_CATALOG.products.length > 4 && <div className="text-slate-500 italic pl-2">+ {LLS_ELECTRIC_CATALOG.products.length - 4} items más...</div>}
+                    </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -192,33 +216,24 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({ onClose }) => {
                         <FileText className="w-5 h-5 text-eng-500" />
                         <div>
                            <p className="text-sm text-slate-200 font-medium truncate max-w-[200px] sm:max-w-xs">{file.name}</p>
-                           <p className="text-xs text-slate-500 uppercase">{file.mimeType.split('/')[1]}</p>
+                           <span className="text-[10px] text-slate-500 uppercase">{file.mimeType.split('/')[1]}</span>
                         </div>
                       </div>
-                      <button 
-                        onClick={() => handleRemoveFile(idx)}
-                        className="text-slate-500 hover:text-red-400 p-2 hover:bg-slate-800 rounded-lg transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
+                      <button onClick={() => handleRemoveFile(idx)} className="text-slate-500 hover:text-red-400 p-2">
+                        <X className="w-4 h-4" />
                       </button>
                     </div>
                   ))}
                   {settings.customStandards.length === 0 && (
-                     <p className="text-slate-600 text-sm text-center py-4">No has subido archivos personalizados.</p>
+                    <div className="text-center text-slate-500 text-xs py-4">No has subido archivos personalizados.</div>
                   )}
                 </div>
              </div>
           )}
-
         </div>
       </div>
     </div>
   );
 };
-
-// Icon component needed here for trash
-const Trash2 = ({ className }: { className?: string }) => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
-);
 
 export default SettingsPanel;

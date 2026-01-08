@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import InputSection from './components/InputSection';
 import ClarificationChat from './components/ClarificationChat';
 import ResultsDashboard from './components/ResultsDashboard';
@@ -17,6 +17,10 @@ const App: React.FC = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isModifying, setIsModifying] = useState(false);
   const [isReadyToGenerate, setIsReadyToGenerate] = useState(false);
+
+  // Ref to track the current active generation request ID
+  // This allows us to ignore the result of a promise if the user clicked "Stop"
+  const activeGenerationId = useRef<number>(0);
 
   // --- Handlers ---
 
@@ -118,14 +122,24 @@ const App: React.FC = () => {
 
   const handleGenerateReport = async () => {
     setStatus(AppStatus.ANALYZING);
+    
+    // Create a new ID for this specific generation attempt
+    const generationId = Date.now();
+    activeGenerationId.current = generationId;
+
     try {
       const result = await generateEngineeringData(chatMessages, attachments);
-      // If status changed (user clicked stop), don't update data
-      setData(result);
-      setStatus(AppStatus.SUCCESS);
+      
+      // CRITICAL CHECK: Only update state if this is still the active generation
+      // If user clicked Stop, activeGenerationId.current will be different (or 0)
+      if (activeGenerationId.current === generationId) {
+        setData(result);
+        setStatus(AppStatus.SUCCESS);
+      } else {
+        console.log("Generation result ignored because process was stopped.");
+      }
     } catch (err: any) {
-       // Only show error if we are still analyzing (not if stopped)
-       if(status === AppStatus.ANALYZING) {
+       if (activeGenerationId.current === generationId) {
           console.error(err);
           setError(err.message || "Error generando el informe final.");
           setStatus(AppStatus.ERROR);
@@ -134,33 +148,41 @@ const App: React.FC = () => {
   };
 
   const handleStopGeneration = () => {
-      // Logic to effectively "cancel" for the user: reset state.
-      // Note: This does not abort the network request in this version, but resets UI.
-      if (status === AppStatus.ANALYZING) {
-          setStatus(AppStatus.DASHBOARD); // Or clarify, but Dashboard is safer to reset
-      }
+      // Invalidate the current generation ID
+      activeGenerationId.current = 0;
+      // Reset UI immediately
+      setStatus(AppStatus.CLARIFYING); 
   };
 
   const handleModifyReport = async (request: string) => {
       if(!data) return;
       setIsModifying(true);
+      
+      // Use the same ref logic for modification safety
+      const modificationId = Date.now();
+      activeGenerationId.current = modificationId;
+
       try {
           const updatedData = await modifyEngineeringData(data, request);
-          updatedData.id = data.id;
-          updatedData.lastModified = new Date().toISOString();
-          setData(updatedData);
+          
+          if (activeGenerationId.current === modificationId) {
+             updatedData.id = data.id;
+             updatedData.lastModified = new Date().toISOString();
+             setData(updatedData);
+          }
       } catch (err: any) {
-          // If the user cancelled, we might still be here depending on implementation, 
-          // but we will rely on isModifying check in UI
-          if (isModifying) {
-              alert("Error aplicando cambios: " + err.message);
+          if (activeGenerationId.current === modificationId) {
+             alert("No se pudieron aplicar los cambios: " + err.message);
           }
       } finally {
-          setIsModifying(false);
+          if (activeGenerationId.current === modificationId) {
+             setIsModifying(false);
+          }
       }
   };
 
   const handleCancelModify = () => {
+      activeGenerationId.current = 0; // Invalidate current modification
       setIsModifying(false);
   };
 
@@ -188,7 +210,7 @@ const App: React.FC = () => {
                <SettingsIcon className="w-5 h-5" />
              </button>
              <div className="hidden md:flex items-center gap-2">
-                <span>v2.3</span>
+                <span>v2.4 (Pro)</span>
                 <a href="#" className="hover:text-white transition-colors"><Github className="w-5 h-5" /></a>
              </div>
           </div>
@@ -224,7 +246,7 @@ const App: React.FC = () => {
                 Cálculo de Ingeniería<br/>Potenciado por IA
                 </h2>
                 <p className="text-slate-400 max-w-2xl text-lg">
-                Sube tus normas técnicas, describe el proyecto y colabora con un auditor IA para generar expedientes técnicos perfectos.
+                Sube tus normas técnicas, describe el proyecto y colabora con un auditor IA para generar expedientes técnicos profesionales.
                 </p>
             </div>
             <InputSection onAnalyze={handleInitialInput} isAnalyzing={false} />
@@ -252,14 +274,14 @@ const App: React.FC = () => {
                    </div>
                </div>
                <h3 className="mt-8 text-xl font-bold text-white">Generando Expediente Técnico...</h3>
-               <p className="text-slate-400 mt-2 text-center max-w-md">Calculando cómputos métricos, APU y memoria descriptiva. <br/>Esto puede tardar unos minutos.</p>
+               <p className="text-slate-400 mt-2 text-center max-w-md">Realizando cómputos métricos, análisis de precios y memoria descriptiva. <br/>Esto puede tardar unos minutos.</p>
                
                <button 
                 onClick={handleStopGeneration}
-                className="mt-8 flex items-center gap-2 bg-red-900/50 hover:bg-red-800 text-red-200 px-6 py-2 rounded-full font-medium transition-colors border border-red-800"
+                className="mt-8 flex items-center gap-2 bg-red-900/50 hover:bg-red-800 text-red-200 px-6 py-2 rounded-full font-medium transition-colors border border-red-800 hover:shadow-lg hover:shadow-red-900/20"
                >
                  <StopCircle className="w-5 h-5" />
-                 Detener Generación
+                 Detener y Volver
                </button>
            </div>
         )}
@@ -289,7 +311,7 @@ const App: React.FC = () => {
                  onClick={handleReturnToDashboard}
                  className="text-slate-400 hover:text-white text-sm flex items-center gap-2 hover:bg-slate-800 px-3 py-1.5 rounded-lg transition-all"
                >
-                 ← Cerrar Proyecto
+                 ← Guardar y Cerrar
                </button>
             </div>
             <ResultsDashboard 

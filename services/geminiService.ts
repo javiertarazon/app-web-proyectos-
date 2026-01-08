@@ -1,10 +1,12 @@
 import { GoogleGenAI, Type, Schema, GenerateContentResponse } from "@google/genai";
 import { ProjectResponse, FileAttachment, ChatMessage, ClarificationResponse } from "../types";
 import { STANDARDS_DB, SUPPORTED_COUNTRIES } from "../data/standardsData";
+import { getMaterialCatalogsContext } from "../data/materialsCatalogs";
 import { loadSettings } from "../services/settingsService";
 
 const MODEL_NAME = "gemini-3-pro-preview";
 const CLARIFICATION_FALLBACK_MODEL = "gemini-2.5-flash";
+const MODIFICATION_FALLBACK_MODEL = "gemini-2.5-flash";
 
 // Helper to get AI instance
 const getAI = () => {
@@ -30,8 +32,17 @@ async function withRetry<T>(
                          error.message?.includes('RESOURCE_EXHAUSTED') ||
                          error.message?.includes('overloaded');
 
-    if (isQuotaError && retries > 0) {
-      console.warn(`Gemini API Quota/Limit hit. Retrying in ${delay}ms... (${retries} attempts left)`);
+    const isNetworkError = error.status === 500 || 
+                           error.status === 'UNKNOWN' ||
+                           (error.message && (
+                              error.message.includes('xhr error') || 
+                              error.message.includes('Network Error') || 
+                              error.message.includes('Failed to fetch') ||
+                              error.message.includes('500')
+                           ));
+
+    if ((isQuotaError || isNetworkError) && retries > 0) {
+      console.warn(`Gemini API Error (${error.status || error.message}). Retrying in ${delay}ms... (${retries} attempts left)`);
       await new Promise(resolve => setTimeout(resolve, delay));
       return withRetry(operation, retries - 1, delay * 2);
     }
@@ -57,6 +68,9 @@ const getContextFromSettings = (): string => {
       });
     });
   }
+
+  // Load External Catalogs (e.g., LLS Electric)
+  context += "\n" + getMaterialCatalogsContext() + "\n";
 
   // Add custom user files
   if (settings.customStandards.length > 0) {
@@ -188,17 +202,26 @@ export const generateClarifyingQuestions = async (chatHistory: ChatMessage[], at
   const conversationContext = chatHistory.map(msg => `${msg.role === 'user' ? 'CLIENTE' : 'INGENIERO'}: ${msg.text}`).join('\n\n');
 
   const systemInstruction = `
-    Eres un Auditor Técnico de Ingeniería.
-    TU OBJETIVO: Asegurar que NO existan ambigüedades en el proyecto.
+    Eres un Auditor Técnico de Ingeniería e Ingeniero Proyectista Senior.
     PAÍS: ${settings.country}.
+
+    TU OBJETIVO: 
+    1. Entender el proyecto del usuario.
+    2. ANALIZAR CRÍTICAMENTE LOS ARCHIVOS ADJUNTOS (si existen). 
+       - Si el usuario sube "Memorias Descriptivas" o "Cómputos Métricos", LÉELOS y busca inconsistencias, faltas de normativa o datos incompletos.
+       - Si están incompletos, PREGUNTA al usuario para rellenar los huecos.
+       - Si están correctos, úsalos como base.
     
+    EJEMPLO DE AUDITORÍA:
+    - "He analizado su memoria descriptiva adjunta. Noto que menciona aire acondicionado pero no incluye el cálculo de carga térmica. ¿Desea que lo calculemos basándonos en el área?"
+    - "Veo sus cómputos métricos. La partida de concreto no incluye el desperdicio del 5%. ¿Desea corregirlo?"
+
     Si el usuario dice "Local Gastronómico", DEBES preguntar por:
     1. Trampa de grasas (Obligatorio en restaurantes).
     2. Sistema de Detección de Incendios (Obligatorio >100m2).
     3. Tipo de corriente (Trifásica vs Monofásica para equipos de cocina).
-    4. Acabados sanitarios en cocina (Curva sanitaria, pintura epóxica).
     
-    No marques 'isReady' hasta tener datos para generar >50 partidas.
+    No marques 'isReady' hasta tener datos suficientes para generar un informe profesional completo.
   `;
 
   const clarificationSchema: Schema = {
@@ -265,61 +288,41 @@ export const generateEngineeringData = async (chatHistory: ChatMessage[], attach
 
   const conversationContext = chatHistory.map(msg => `${msg.role === 'user' ? 'CLIENTE' : 'INGENIERO'}: ${msg.text}`).join('\n\n');
 
-  // SYSTEM PROMPT AGRESIVO PARA CÁLCULOS Y DESGLOSE
+  // SYSTEM PROMPT EXTREMADAMENTE ESTRICTO PARA EVITAR RESÚMENES
   const systemInstruction = `
-    ACTÚA COMO UN INGENIERO CALCULISTA Y PRESUPUESTISTA SENIOR.
-    
-    EL USUARIO HA RECHAZADO INFORMES ANTERIORES POR SER "RESÚMENES".
-    TU META ES LA **GRANULARIDAD EXTREMA** Y LA **JUSTIFICACIÓN ARITMÉTICA**.
+    ROL: INGENIERO DE COSTOS Y PROYECTISTA PRINCIPAL (SENIOR).
+    PAÍS: ${settings.country}.
 
-    --- INSTRUCCIONES PARA MEMORIA DE CÁLCULO (Nuevos Campos de Texto) ---
-    En los campos 'calculosEstructuralesDetallados', 'calculosElectricosDetallados', etc., NO escribas solo el resultado.
-    DEBES ESCRIBIR LA SÁBANA DE CÁLCULO:
-    
-    INCORRECTO: "Carga Eléctrica: 90kVA".
-    CORRECTO:
-    "1. Carga de Iluminación:
-       - Área Salón: 80m2 x 30W/m2 = 2400W
-       - Área Cocina: 40m2 x 50W/m2 = 2000W
-    2. Carga de Tomacorrientes:
-       - 15 Tomas Generales x 180W = 2700W
-       - 6 Tomas Especiales Cocina x 1500W = 9000W
-    3. Carga Fuerza Motriz (Aires):
-       - Equipo 5 Ton (18000 BTU) = 6500W
-    4. SUMATORIA TOTAL = ...
-    5. APLICACIÓN DE FACTOR DE DEMANDA (NEC Tablas): 2400W x 100% + ..."
-    
-    HAZ ESTO PARA TODAS LAS DISCIPLINAS (AGUA, ELECTRICIDAD, CONCRETO).
+    !!! INSTRUCCIÓN CRÍTICA: PROHIBIDO RESUMIR - DETALLE EXTREMO EN MATERIALES !!!
+    El usuario exige una LISTA DE MATERIALES EXHAUSTIVA en cada partida.
 
-    --- INSTRUCCIONES PARA EL PRESUPUESTO (PARTIDAS) ---
-    Genera entre 50 y 100 partidas. DESGLOSA TODO.
-    
-    NO AGRUPES "Punto Eléctrico".
-    Genera:
-    1. E.X.X Suministro de Tubería EMT 1/2".
-    2. E.X.X Instalación de Tubería EMT 1/2".
-    3. E.X.X Suministro de Cajetines Metálicos 4x2".
-    4. E.X.X Suministro de Cable THW #12 AWG.
-    5. E.X.X Suministro de Interruptores Dobles.
-    
-    NO AGRUPES "Baño".
-    Genera:
-    1. E.X.X Puntos de Aguas Blancas 1/2".
-    2. E.X.X Puntos de Aguas Negras 4".
-    3. E.X.X Suministro WC Tanque Bajo.
-    4. E.X.X Instalación de WC.
-    5. E.X.X Construcción de Revestimiento en Paredes (Cerámica).
+    REGLAS DE ORO PARA EL PRESUPUESTO (PARTIDAS):
+    1. **ATOMICIDAD**: Desglosa partidas grandes en suministro e instalación.
+    2. **FUNCIONALIDAD TOTAL (LLAVE EN MANO)**: Incluye acometidas, tableros, válvulas y pruebas.
+    3. **CANTIDAD DE PARTIDAS**: Mínimo 30-80 partidas según el alcance.
 
-    --- APU (Análisis de Precios) ---
-    - En Materiales: Incluye siempre "Pegamento", "Electrodos", "Tipe", "Solventes" según corresponda. No pongas solo el material principal.
-    - Mano de Obra: Cuadrillas realistas (Ayudante + Maestro).
+    REGLAS ESTRICTAS PARA MATERIALES (APU):
+    Debes listar CADA componente físico necesario. 
+    - **PROHIBIDO** usar items genéricos como "Global Materiales" o "Kit de Instalación".
+    - **Estructura Metálica**: NO pongas solo "Acero". Desglosa: Perfil IPE-120, Pletina de anclaje 20x20cm, Pernos 5/8", Tuercas, Arandelas de presión, Electrodos E7018, Fondo Anticorrosivo, Solvente.
+    - **Electricidad**: NO pongas solo "Punto". Desglosa: Tubería EMT 3/4", Curvas EMT, Conectores EMT, Cajetín 4x2, Tornillos Spax, Cable THHN #12, Tirro, Cinta Eléctrica.
+    - **Concreto**: Cemento Gris (Saco), Arena Lavada, Piedra Picada, Agua, Aditivos, Clavos 3", Alambre Dulce #18, Madera de encofrado.
+    - **Sanitaria**: Tubería PVC, Codos 90, Yee, Teflón, Limpiador PVC, Soldadura líquida PVC, Abrazaderas.
+    - **Redes Eléctricas (Media Tensión)**: Utiliza explícitamente los datos de los catálogos cargados (LLS Electric) si aplica. Ejemplo: "Cortacircuito Fusible 15kV LLS Electric", "Eslabón Fusible Tipo K".
 
-    USA EL CONTEXTO DEL CHAT PARA DETERMINAR EL ALCANCE REAL (Ej: Si es 150m2 Restaurante, asume Cocina Industrial, Baños Públicos H/M, Baño Empleados, Barra, Salón).
+    REGLAS PARA MANO DE OBRA:
+    - Cuadrillas completas (Maestro + Ayudante + Obrero).
+
+    REGLAS PARA MEMORIAS DE CÁLCULO:
+    - Muestra el procedimiento matemático paso a paso.
+    - Ejemplo: "Carga Térmica = Area (20m2) * 600 BTU/m2 = 12,000 BTU".
+
+    USA LAS NORMAS ${settings.country} (COVENIN/NEC/ETC) PARA LOS CÓDIGOS DE PARTIDA.
   `;
 
   const parts: any[] = [
-    { text: `NORMATIVA APLEICABLE (${settings.country}):\n${standardsContext}` },
-    { text: `DATOS DEL PROYECTO:\n${conversationContext}` }
+    { text: `NORMATIVA APLICABLE (${settings.country}):\n${standardsContext}` },
+    { text: `DATOS DEL PROYECTO (HISTORIAL):\n${conversationContext}` }
   ];
 
   attachments.forEach(att => parts.push({ inlineData: { mimeType: att.mimeType, data: att.data } }));
@@ -333,17 +336,16 @@ export const generateEngineeringData = async (chatHistory: ChatMessage[], attach
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
         responseSchema: projectSchema,
-        // Removed thinkingConfig for gemini-3-pro to avoid quota issues and comply with guidelines
-        maxOutputTokens: 65536
+        maxOutputTokens: 65536 // Max token limit for extensive budgets
       }
-    }), 3, 3000); // 3 retries, starting at 3s delay
+    }), 3, 4000); // Increased delay for heavy processing
 
     if (!response.text) { throw new Error("Sin datos de Gemini"); }
 
     return JSON.parse(response.text) as ProjectResponse;
   } catch (e) {
     console.error("Generation Error:", e);
-    throw new Error("El sistema de ingeniería está sobrecargado (Error 429). Intenta reducir el número de archivos adjuntos o espera unos minutos.");
+    throw new Error("El sistema de ingeniería está procesando un volumen alto de datos. Por favor intenta de nuevo en unos segundos.");
   }
 };
 
@@ -353,41 +355,55 @@ export const modifyEngineeringData = async (currentData: ProjectResponse, userRe
   const settings = loadSettings();
   
   const systemInstruction = `
-    Eres un Ingeniero Auditor Senior.
-    PAÍS: ${settings.country}.
-    
-    MODIFICACIÓN SOLICITADA: "${userRequest}".
-    
-    Reglas:
-    1. Si el usuario pide cambiar un material (ej. "Pisos de Mármol"), actualiza:
-       - La Memoria Descriptiva (Acabados).
-       - El Presupuesto (Elimina partida vieja, crea partidas nuevas de suministro, instalación, pulitura).
-       - Los APU (Materiales nuevos, rendimientos diferentes).
-    2. Si pide "Recalcular Tanque", actualiza 'calculosSanitariosDetallados' mostrando la nueva aritmética.
+    ROL: Ingeniero de Control de Cambios y Presupuestos (JSON Patcher).
+    TAREA: Ejecutar una MODIFICACIÓN QUIRÚRGICA Y PUNTUAL al archivo JSON del proyecto.
+
+    ESTADO ACTUAL: El usuario te proveerá el JSON completo del proyecto actual.
+    SOLICITUD PUNTUAL: "${userRequest}".
+
+    PRINCIPIOS DE EDICIÓN OBLIGATORIOS (STRICT MODE):
+    1. CONSERVACIÓN ABSOLUTA: Todo lo que NO esté explícitamente relacionado con la solicitud DEBE permanecer IDÉNTICO. 
+       
+    2. LÓGICA DE ACTUALIZACIÓN:
+       - Si se pide "Agregar X": Crea la partida nueva, genera su APU completo y agrégala al array de presupuesto.
+       - Si el usuario pide "DETALLAR MATERIALES": Revisa las partidas indicadas y expande la lista de materiales (ej. cambiar "Kit" por tornillos, tuercas, arandelas, etc).
+       
+    3. COHERENCIA MATEMÁTICA EN CAMBIOS:
+       - Si modificas un metrado (Cantidad), recalcula: PrecioTotal = Metrado * PrecioUnitario.
+       - Si modificas un costo de material dentro de un APU, recalcula el Precio Unitario de la partida y luego su Precio Total.
+
+    TU RESPUESTA DEBE SER EL JSON COMPLETO (PROJECTRESPONSE) CON LOS CAMBIOS APLICADOS Y EL RESTO INTACTO.
   `;
 
-  try {
-    const response = await withRetry<GenerateContentResponse>(() => ai.models.generateContent({
-      model: MODEL_NAME,
+  const generate = async (model: string) => {
+      const response = await ai.models.generateContent({
+      model: model,
       contents: {
         parts: [
-          { text: `JSON ACTUAL: ${JSON.stringify(currentData)}` },
-          { text: `SOLICITUD: ${userRequest}` }
+          { text: `JSON ACTUAL (ESTADO INICIAL): ${JSON.stringify(currentData)}` },
+          { text: `SOLICITUD DE CAMBIO (APLICAR SOLO ESTO): ${userRequest}` }
         ]
       },
       config: {
         systemInstruction,
         responseMimeType: "application/json",
         responseSchema: projectSchema,
-        // thinkingConfig removed
         maxOutputTokens: 65536
       }
-    }));
-
-    if (!response.text) { throw new Error("Sin respuesta"); }
+    });
+    if (!response.text) throw new Error("Sin respuesta de Gemini");
     return JSON.parse(response.text) as ProjectResponse;
+  };
+
+  try {
+    return await withRetry(() => generate(MODEL_NAME));
   } catch (e) {
-    console.error("Modification Error:", e);
-    throw new Error("Error al modificar el proyecto debido a saturación de servicios.");
+    console.warn("Modification with primary model failed, attempting fallback...");
+    try {
+        return await withRetry(() => generate(MODIFICATION_FALLBACK_MODEL));
+    } catch (fallbackError) {
+        console.error("Modification Error:", fallbackError);
+        throw new Error("Error al modificar el proyecto. Intente nuevamente o realice cambios más pequeños.");
+    }
   }
 }

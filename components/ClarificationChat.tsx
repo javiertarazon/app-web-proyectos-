@@ -49,8 +49,7 @@ const ClarificationChat: React.FC<ClarificationChatProps> = ({ messages, onSendM
   const handleSubmitSelections = () => {
     // Convertir selecciones a texto
     const formattedResponses = Object.entries(selectedOptions).map(([qId, answer]) => {
-      // Find the question text for context (optional, but good for the AI)
-      // We scan the last message to find the question text corresponding to the ID
+      // Find the question text for context
       let qText = "Pregunta";
       const lastMsg = messages[messages.length - 1];
       if (lastMsg.clarificationData) {
@@ -67,8 +66,7 @@ const ClarificationChat: React.FC<ClarificationChatProps> = ({ messages, onSendM
 
   const lastMessage = messages[messages.length - 1];
   const showOptionsForm = lastMessage?.role === 'model' && lastMessage.clarificationData?.questions && lastMessage.clarificationData.questions.length > 0;
-  const isFormComplete = showOptionsForm && lastMessage.clarificationData?.questions.every(q => selectedOptions[q.id]);
-
+  
   return (
     <div className="w-full max-w-4xl mx-auto h-[75vh] flex flex-col bg-slate-900 border border-slate-700 rounded-2xl overflow-hidden shadow-2xl animate-fade-in relative">
       {/* Header */}
@@ -105,7 +103,7 @@ const ClarificationChat: React.FC<ClarificationChatProps> = ({ messages, onSendM
                 {msg.role === 'user' ? <User className="w-4 h-4 text-white" /> : <Bot className="w-4 h-4 text-white" />}
               </div>
               
-              <div className={`space-y-3 ${msg.role === 'user' ? 'items-end' : 'items-start'} flex flex-col`}>
+              <div className={`space-y-3 ${msg.role === 'user' ? 'items-end' : 'items-start'} flex flex-col w-full`}>
                 {/* Texto del mensaje */}
                 <div className={`p-4 rounded-2xl text-sm leading-relaxed whitespace-pre-line ${
                   msg.role === 'user' 
@@ -115,8 +113,7 @@ const ClarificationChat: React.FC<ClarificationChatProps> = ({ messages, onSendM
                   {msg.role === 'model' && msg.clarificationData ? msg.clarificationData.message : msg.text}
                 </div>
 
-                {/* Preguntas de Selección (Solo para el último mensaje si es del modelo, o si queremos mostrar historial de que se preguntó) */}
-                {/* Mostramos el formulario interactivo SOLO si es el último mensaje. Si es histórico, solo mostramos las preguntas sin interacción (opcional, por ahora solo interactivo al final) */}
+                {/* Preguntas de Selección (Interactivos) */}
                 {msg.id === lastMessage?.id && msg.clarificationData?.questions && msg.clarificationData.questions.length > 0 && (
                    <div className="bg-slate-800/80 border border-slate-600 p-4 rounded-xl space-y-4 w-full animate-fade-in-up">
                       <h4 className="text-xs font-bold text-eng-400 uppercase tracking-widest mb-2 flex items-center gap-2">
@@ -149,7 +146,7 @@ const ClarificationChat: React.FC<ClarificationChatProps> = ({ messages, onSendM
                       <div className="pt-2 flex justify-end">
                          <button 
                            onClick={handleSubmitSelections}
-                           disabled={!isFormComplete || isProcessing}
+                           disabled={isProcessing}
                            className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white px-4 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-2"
                          >
                             <span>Confirmar Selección</span>
@@ -177,28 +174,26 @@ const ClarificationChat: React.FC<ClarificationChatProps> = ({ messages, onSendM
         )}
       </div>
 
-      {/* Input Manual (Fallback) */}
-      {!showOptionsForm && !isReadyToGenerate && (
-        <div className="p-4 bg-slate-800 border-t border-slate-700 absolute bottom-0 w-full z-20">
-          <form onSubmit={handleSubmitText} className="relative">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Escribe detalles adicionales..."
-              className="w-full bg-slate-900 border border-slate-600 rounded-xl py-3 pl-4 pr-12 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-eng-500 focus:border-transparent font-sans"
-              autoFocus
-            />
-            <button 
-              type="submit" 
-              disabled={!input.trim() || isProcessing}
-              className="absolute right-2 top-2 p-1.5 bg-eng-600 hover:bg-eng-500 rounded-lg text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              <Send className="w-4 h-4" />
-            </button>
-          </form>
-        </div>
-      )}
+      {/* Input Manual - SIEMPRE DISPONIBLE */}
+      <div className="p-4 bg-slate-800 border-t border-slate-700 absolute bottom-0 w-full z-20">
+        <form onSubmit={handleSubmitText} className="relative">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={showOptionsForm ? "Escribe para corregir o agregar detalles..." : "Escribe tu respuesta..."}
+            className="w-full bg-slate-900 border border-slate-600 rounded-xl py-3 pl-4 pr-12 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-eng-500 focus:border-transparent font-sans"
+            autoFocus
+          />
+          <button 
+            type="submit" 
+            disabled={!input.trim() || isProcessing}
+            className="absolute right-2 top-2 p-1.5 bg-eng-600 hover:bg-eng-500 rounded-lg text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            <Send className="w-4 h-4" />
+          </button>
+        </form>
+      </div>
     </div>
   );
 };

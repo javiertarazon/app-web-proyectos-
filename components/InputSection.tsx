@@ -18,7 +18,7 @@ const InputSection: React.FC<InputSectionProps> = ({ onAnalyze, isAnalyzing }) =
       for (let i = 0; i < e.target.files.length; i++) {
         const file = e.target.files[i];
         // Support text, pdf, images
-        if (file.type === "application/pdf" || file.type.startsWith("image/") || file.type === "text/plain") {
+        if (file.type === "application/pdf" || file.type.startsWith("image/") || file.type === "text/plain" || file.name.endsWith(".csv")) {
           const reader = new FileReader();
           await new Promise<void>((resolve) => {
             reader.onload = (event) => {
@@ -33,7 +33,7 @@ const InputSection: React.FC<InputSectionProps> = ({ onAnalyze, isAnalyzing }) =
             reader.readAsDataURL(file);
           });
         } else {
-          alert(`El archivo ${file.name} no es compatible. Use PDF, Imágenes o TXT.`);
+          alert(`El archivo ${file.name} no es compatible. Use PDF, Imágenes o TXT/CSV.`);
         }
       }
       setFiles(prev => [...prev, ...newFiles]);
@@ -61,15 +61,16 @@ const InputSection: React.FC<InputSectionProps> = ({ onAnalyze, isAnalyzing }) =
             <Cpu className="w-5 h-5" />
             <h2 className="text-sm font-semibold uppercase tracking-wider">Definición del Proyecto</h2>
           </div>
-          <span className="text-xs text-slate-500">Sube normas o planos como referencia</span>
+          <span className="text-xs text-slate-500">Sube planos, normas o <strong>cálculos previos para verificar</strong></span>
         </div>
         
         <form onSubmit={handleSubmit} className="relative space-y-4">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Describe tu proyecto de ingeniería aquí... 
-Ej: 'Diseño de losa de fundación para edificio de 5 pisos según norma adjunta...'"
+            placeholder="Describe tu proyecto o indica qué archivos estás subiendo para revisión.
+Ej: 'Revisa la memoria descriptiva adjunta y completa los cálculos eléctricos faltantes...'
+Ej: 'Verifica los cómputos métricos del PDF adjunto y genera el presupuesto actualizado...'"
             className="w-full h-40 bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-eng-500 focus:border-transparent outline-none resize-none font-mono text-sm leading-relaxed transition-all"
             disabled={isAnalyzing}
           />
@@ -97,7 +98,7 @@ Ej: 'Diseño de losa de fundación para edificio de 5 pisos según norma adjunta
                 ref={fileInputRef} 
                 onChange={handleFileChange} 
                 className="hidden" 
-                accept="application/pdf,image/*,text/plain"
+                accept="application/pdf,image/*,text/plain,.csv"
               />
               <button
                 type="button"
@@ -106,7 +107,7 @@ Ej: 'Diseño de losa de fundación para edificio de 5 pisos según norma adjunta
                 className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-600 transition-colors text-sm"
               >
                 <Paperclip className="w-4 h-4" />
-                <span>Adjuntar Normas/Planos</span>
+                <span>Adjuntar Archivos</span>
               </button>
             </div>
 
@@ -129,7 +130,7 @@ Ej: 'Diseño de losa de fundación para edificio de 5 pisos según norma adjunta
                 </>
               ) : (
                 <>
-                  <span>Generar Informe</span>
+                  <span>Analizar y Generar</span>
                   <Send className="w-4 h-4" />
                 </>
               )}
